@@ -1,20 +1,19 @@
+use gtk4::gdk;
+use gtk4::pango;
 use gtk4::prelude::*;
-use gtk4::{gdk, gio, glib};
-use gtk4::{Box as GtkBox, Button, Label, Orientation, ScrolledWindow, Stack};
-use nevermore_core::tmux::TmuxBackend;
+use gtk4::{Box as GtkBox, Button, Label, Orientation, PolicyType, ScrolledWindow, Stack};
 use nevermore_core::traits::{SessionBackend, TaskBackend};
-use nevermore_core::SystemdTaskBackend;
+use nevermore_core::{SystemdTaskBackend, TmuxBackend};
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use vte4::prelude::*;
 use vte4::Terminal;
 
-#[derive(Clone)]
-pub struct TerminalPage {
-    pub id: String,
-    pub title: String,
-    pub session_name: String,
-    pub terminal: Terminal,
+struct TerminalPage {
+    id: String,
+    title: String,
+    session_name: String,
+    terminal: Terminal,
 }
 
 pub struct TerminalPane {
@@ -26,6 +25,7 @@ pub struct TerminalPane {
     active_page_id: Rc<RefCell<String>>,
     tmux: TmuxBackend,
     systemd: SystemdTaskBackend,
+    self_weak: RefCell<Option<Weak<TerminalPane>>>,
 }
 
 impl TerminalPane {
@@ -34,23 +34,32 @@ impl TerminalPane {
         container.set_hexpand(true);
         container.set_vexpand(true);
 
-        // 1. Page Bar
+        // 1. Page Bar with ScrolledWindow to prevent width expansion
         let page_bar = GtkBox::new(Orientation::Horizontal, 4);
         page_bar.add_css_class("page-bar");
 
-        let page_bar_box = GtkBox::new(Orientation::Horizontal, 4);
-        page_bar_box.set_hexpand(true);
+        let page_bar_scroll = ScrolledWindow::builder()
+            .hscrollbar_policy(PolicyType::Automatic)
+            .vscrollbar_policy(PolicyType::Never)
+            .hexpand(true)
+            .build();
 
-        let btn_new = Button::with_label("+ New");
+        let page_bar_box = GtkBox::new(Orientation::Horizontal, 4);
+        page_bar_scroll.set_child(Some(&page_bar_box));
+
+        let btn_new = Button::with_label("+");
+        btn_new.set_tooltip_text(Some("New Terminal Page"));
         btn_new.add_css_class("btn-new-page");
 
-        let btn_bg = Button::with_label("⏏ Background");
+        let btn_bg = Button::with_label("⏏");
+        btn_bg.set_tooltip_text(Some("Send to Background"));
         btn_bg.add_css_class("btn-action-bg");
 
-        let btn_close = Button::with_label("✕ Close");
+        let btn_close = Button::with_label("✕");
+        btn_close.set_tooltip_text(Some("Close Page"));
         btn_close.add_css_class("btn-action-close");
 
-        page_bar.append(&page_bar_box);
+        page_bar.append(&page_bar_scroll);
         page_bar.append(&btn_new);
         page_bar.append(&btn_bg);
         page_bar.append(&btn_close);
@@ -72,8 +81,8 @@ impl TerminalPane {
         bg_section.append(&bg_header);
 
         let bg_scroll = ScrolledWindow::builder()
-            .hscrollbar_policy(gtk4::PolicyType::Never)
-            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .hscrollbar_policy(PolicyType::Never)
+            .vscrollbar_policy(PolicyType::Automatic)
             .min_content_height(100)
             .build();
 
@@ -94,7 +103,9 @@ impl TerminalPane {
             active_page_id: Rc::new(RefCell::new(String::new())),
             tmux: TmuxBackend::new("nevermore"),
             systemd: SystemdTaskBackend::new("nevermore-task"),
+            self_weak: RefCell::new(None),
         });
+        pane.self_weak.replace(Some(Rc::downgrade(&pane)));
 
         // Connect action buttons
         let pane_clone = pane.clone();
@@ -112,8 +123,18 @@ impl TerminalPane {
             pane_clone.close_active_page();
         });
 
-        // Initialize first default page
-        pane.create_new_page(Some("main"));
+        // Auto-restore foreground terminal pages on startup/restart
+        let existing = pane.tmux.list_sessions().unwrap_or_default();
+        let mut foreground_opened = 0;
+        for s in &existing {
+            if !pane.tmux.is_session_backgrounded(&s.name) {
+                pane.create_new_page(Some(&s.name));
+                foreground_opened += 1;
+            }
+        }
+        if foreground_opened == 0 {
+            pane.create_new_page(Some("main"));
+        }
         pane.refresh_background_list();
 
         pane
@@ -123,7 +144,7 @@ impl TerminalPane {
         &self.container
     }
 
-    /// Spawns a new terminal page attached to tmux -L nevermore.
+    /// Spawns a new terminal page attached to tmux -L nevermore with -f <conf_path>.
     pub fn create_new_page(&self, custom_name: Option<&str>) {
         let count = self.pages.borrow().len() + 1;
         let session_name = match custom_name {
@@ -136,23 +157,33 @@ impl TerminalPane {
         let terminal = Terminal::new();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
+        terminal.set_size_request(200, 200);
         terminal.set_scrollback_lines(50000);
+
+        // Configure font: Hack Nerd Font Mono 10
+        terminal.set_font(Some(&pango::FontDescription::from_string(
+            "Hack Nerd Font Mono 10",
+        )));
 
         // Solid dark theme colors
         let fg = gdk::RGBA::new(0.96, 0.96, 0.96, 1.0);
         let bg = gdk::RGBA::new(0.094, 0.094, 0.106, 1.0); // #18181b
         terminal.set_colors(Some(&fg), Some(&bg), &[]);
 
-        // Spawn tmux session
+        // Spawn tmux session with -f <conf_path>
+        let conf_str = self.tmux.conf_path().to_string_lossy().to_string();
         let tmux_args = [
             "/usr/bin/tmux",
             "-L",
             self.tmux.socket_name(),
+            "-f",
+            &conf_str,
             "new-session",
             "-A",
             "-s",
             &session_name,
         ];
+
         terminal.spawn_async(
             vte4::PtyFlags::DEFAULT,
             None,
@@ -164,6 +195,8 @@ impl TerminalPane {
             gio::Cancellable::NONE,
             move |_| {},
         );
+
+        let _ = self.tmux.set_session_backgrounded(&session_name, false);
 
         let page = TerminalPage {
             id: page_id.clone(),
@@ -195,8 +228,11 @@ impl TerminalPane {
         if let Some(pos) = pages.iter().position(|p| p.id == active_id) {
             let removed = pages.remove(pos);
             self.stack.remove(&removed.terminal);
+            let _ = self
+                .tmux
+                .set_session_backgrounded(&removed.session_name, true);
 
-            // Switch to next remaining page or create new if empty
+            // Switch to next remaining page or clear active
             if let Some(next) = pages.first() {
                 let next_id = next.id.clone();
                 drop(pages);
@@ -235,13 +271,18 @@ impl TerminalPane {
         self.refresh_background_list();
     }
 
+    pub fn reattach_session(self: &Rc<Self>, session_name: &str) {
+        let _ = self.tmux.set_session_backgrounded(session_name, false);
+        self.create_new_page(Some(session_name));
+    }
+
     fn rebuild_page_bar(&self) {
         while let Some(child) = self.page_bar_box.first_child() {
             self.page_bar_box.remove(&child);
         }
 
-        let pages = self.pages.borrow();
         let active_id = self.active_page_id.borrow().clone();
+        let pages = self.pages.borrow();
 
         for p in pages.iter() {
             let btn = Button::with_label(&p.title);
@@ -251,19 +292,21 @@ impl TerminalPane {
             }
 
             let pid = p.id.clone();
-            let stack_clone = self.stack.clone();
-            let active_clone = self.active_page_id.clone();
-            let bar_clone = self.page_bar_box.clone();
+            let stack_ref = self.stack.clone();
+            let act_ref = self.active_page_id.clone();
+            let bar_box = self.page_bar_box.clone();
 
-            btn.connect_clicked(move |_| {
-                *active_clone.borrow_mut() = pid.clone();
-                stack_clone.set_visible_child_name(&pid);
+            btn.connect_clicked(move |b| {
+                *act_ref.borrow_mut() = pid.clone();
+                stack_ref.set_visible_child_name(&pid);
 
-                let mut cur = bar_clone.first_child();
+                // Update active CSS
+                let mut cur = bar_box.first_child();
                 while let Some(w) = cur {
                     w.remove_css_class("active");
                     cur = w.next_sibling();
                 }
+                b.add_css_class("active");
             });
 
             self.page_bar_box.append(&btn);
@@ -295,6 +338,7 @@ impl TerminalPane {
                     let title = Label::new(Some(&format!("tmux: {}", s.name)));
                     title.add_css_class("session-title");
                     title.set_xalign(0.0);
+                    title.set_ellipsize(pango::EllipsizeMode::End);
 
                     let sub = Label::new(Some(&format!(
                         "clients: {} | windows: {}",
@@ -302,6 +346,7 @@ impl TerminalPane {
                     )));
                     sub.add_css_class("session-sub");
                     sub.set_xalign(0.0);
+                    sub.set_ellipsize(pango::EllipsizeMode::End);
 
                     info_box.append(&title);
                     info_box.append(&sub);
@@ -310,69 +355,13 @@ impl TerminalPane {
                     btn_reattach.add_css_class("btn-reattach");
 
                     let sess_name = s.name.clone();
-                    let stack_clone = self.stack.clone();
-                    let pages_clone = self.pages.clone();
-                    let active_clone = self.active_page_id.clone();
-                    let page_bar_clone = self.page_bar_box.clone();
-                    let bg_list_clone = self.bg_list_box.clone();
-                    let tmux_clone = self.tmux.clone();
+                    let pane_weak = self.self_weak.borrow().clone();
 
                     btn_reattach.connect_clicked(move |_| {
-                        // Reattach session as active page
-                        let count = pages_clone.borrow().len() + 1;
-                        let page_id = format!("page_{}_{}", sess_name, glib::random_int());
-                        let title_str = format!("{}: {}", count, sess_name);
-
-                        let terminal = Terminal::new();
-                        terminal.set_hexpand(true);
-                        terminal.set_vexpand(true);
-                        terminal.set_scrollback_lines(50000);
-
-                        let fg = gdk::RGBA::new(0.96, 0.96, 0.96, 1.0);
-                        let bg = gdk::RGBA::new(0.094, 0.094, 0.106, 1.0);
-                        terminal.set_colors(Some(&fg), Some(&bg), &[]);
-
-                        let tmux_args = [
-                            "/usr/bin/tmux",
-                            "-L",
-                            tmux_clone.socket_name(),
-                            "new-session",
-                            "-A",
-                            "-s",
-                            &sess_name,
-                        ];
-                        terminal.spawn_async(
-                            vte4::PtyFlags::DEFAULT,
-                            None,
-                            &tmux_args,
-                            &[],
-                            glib::SpawnFlags::DEFAULT,
-                            || (),
-                            -1,
-                            gio::Cancellable::NONE,
-                            move |_| {},
-                        );
-
-                        let page = TerminalPage {
-                            id: page_id.clone(),
-                            title: title_str,
-                            session_name: sess_name.clone(),
-                            terminal: terminal.clone(),
-                        };
-
-                        stack_clone.add_named(&terminal, Some(&page_id));
-                        pages_clone.borrow_mut().push(page);
-                        *active_clone.borrow_mut() = page_id.clone();
-                        stack_clone.set_visible_child_name(&page_id);
-
-                        // Trigger UI update
-                        let mut cur = page_bar_clone.first_child();
-                        while let Some(w) = cur {
-                            w.remove_css_class("active");
-                            cur = w.next_sibling();
-                        }
-                        if let Some(card_parent) = bg_list_clone.first_child() {
-                            bg_list_clone.remove(&card_parent);
+                        if let Some(pw) = pane_weak.as_ref() {
+                            if let Some(pane) = pw.upgrade() {
+                                pane.reattach_session(&sess_name);
+                            }
                         }
                     });
 
@@ -395,7 +384,7 @@ impl TerminalPane {
             }
         }
 
-        // 2. Check systemd background tasks
+        // 2. Check transient systemd background tasks
         if let Ok(tasks) = self.systemd.list_tasks() {
             for t in tasks {
                 let card = GtkBox::new(Orientation::Horizontal, 6);
@@ -404,11 +393,11 @@ impl TerminalPane {
                 let info_box = GtkBox::new(Orientation::Vertical, 2);
                 info_box.set_hexpand(true);
 
-                let title = Label::new(Some(&format!("systemd: {}", t.unit)));
+                let title = Label::new(Some(&format!("task: {}", t.unit)));
                 title.add_css_class("session-title");
                 title.set_xalign(0.0);
 
-                let sub = Label::new(Some(&format!("{:?} | {}", t.state, t.command)));
+                let sub = Label::new(Some(&format!("cmd: {}", t.command)));
                 sub.add_css_class("session-sub");
                 sub.set_xalign(0.0);
 
@@ -420,10 +409,9 @@ impl TerminalPane {
                 let sys_kill = self.systemd.clone();
                 let card_box = card.clone();
                 let list_box = self.bg_list_box.clone();
-                let u_name = t.unit.clone();
+                let unit = t.unit.clone();
                 btn_kill.connect_clicked(move |_| {
-                    let _ = sys_kill.stop_task(&u_name);
-                    let _ = sys_kill.dismiss_task(&u_name);
+                    let _ = sys_kill.stop_task(&unit);
                     list_box.remove(&card_box);
                 });
 

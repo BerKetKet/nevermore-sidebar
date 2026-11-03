@@ -8,6 +8,8 @@ use std::process::Command;
 /// Default tmux configuration content extracted and verified from legacy lessons.
 pub const DEFAULT_TMUX_CONF: &str = r#"# Nevermore Sidebar tmux configuration
 set -s escape-time 0
+set -s exit-empty off
+set -s exit-unattached off
 set -g mouse on
 set -g history-limit 50000
 set -g default-terminal "tmux-256color"
@@ -44,6 +46,15 @@ impl TmuxBackend {
             conf_path,
         };
         let _ = backend.ensure_config_file();
+        // Reload configuration on running server to enforce status off, mouse on, 50k scrollback
+        let _ = Command::new("tmux")
+            .arg("-L")
+            .arg(&backend.socket_name)
+            .arg("-f")
+            .arg(&backend.conf_path)
+            .arg("source-file")
+            .arg(&backend.conf_path)
+            .output();
         backend
     }
 
@@ -80,6 +91,47 @@ impl TmuxBackend {
             cmd.arg("-f").arg(&self.conf_path);
         }
         cmd
+    }
+
+    /// Sets whether a session is explicitly in the background (@nevermore_bg option).
+    pub fn set_session_backgrounded(&self, session_name: &str, bg: bool) -> std::io::Result<()> {
+        let val = if bg { "1" } else { "0" };
+        let status = self
+            .tmux_cmd()
+            .arg("set-option")
+            .arg("-t")
+            .arg(session_name)
+            .arg("@nevermore_bg")
+            .arg(val)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "Failed to set @nevermore_bg on session {}",
+                session_name
+            )))
+        }
+    }
+
+    /// Checks whether a session has been marked as backgrounded (@nevermore_bg == "1").
+    pub fn is_session_backgrounded(&self, session_name: &str) -> bool {
+        let output = self
+            .tmux_cmd()
+            .arg("show-options")
+            .arg("-v")
+            .arg("-t")
+            .arg(session_name)
+            .arg("@nevermore_bg")
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                return val == "1";
+            }
+        }
+        false
     }
 }
 

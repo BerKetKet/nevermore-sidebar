@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 cd /home/bgg/projects/nevermore-sidebar
+rm -f docs/spikes/test-notifs.png docs/spikes/test-terminal.png docs/spikes/test-widgets.png
 
-git add -A
+git add Cargo.lock DEPENDENCIES.md crates/ docs/EVIDENCE_LOG.md docs/spikes/06_5-*.png scripts/
 git status
-git commit -m "feat(ui): implement Phase 5 app shell and Phase 6 embedded terminal with tmux backend"
-git checkout main
-git merge phase5-6-app-shell-terminal
-git log -n 5 --oneline

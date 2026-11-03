@@ -70,3 +70,34 @@ impl Default for ThemeTokens {
         }
     }
 }
+
+/// The 9 canonical first-release tab identifiers for Nevermore.
+pub const CANONICAL_TABS: &[&str] = &[
+    "terminal",
+    "widgets",
+    "notifications",
+    "notepad",
+    "media",
+    "gemini",
+    "youtube",
+    "vpn",
+    "email",
+];
+
+/// Validates whether a given string matches one of the canonical 9 tabs.
+pub fn is_valid_tab(tab: &str) -> bool {
+    CANONICAL_TABS.contains(&tab)
+}
+
+/// Normalizes or validates a tab identifier, returning a canonical reference if valid.
+pub fn validate_tab(tab: &str) -> Result<&'static str, String> {
+    for &t in CANONICAL_TABS {
+        if t.eq_ignore_ascii_case(tab) {
+            return Ok(t);
+        }
+    }
+    Err(format!(
+        "Invalid tab '{}'. Valid tabs are: {:?}",
+        tab, CANONICAL_TABS
+    ))
+}

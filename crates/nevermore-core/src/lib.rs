@@ -20,6 +20,9 @@ pub use systemd::SystemdTaskBackend;
 pub use tmux::TmuxBackend;
 pub use traits::{
     AdapterError, EdgeAdapter, NotificationBackend, NotificationError, SessionBackend,
-    SessionError, TaskBackend, TaskError,
+    SessionError, TaskBackend, TaskError, WindowRaiser,
 };
-pub use types::{BackgroundTask, NotificationItem, TaskState, TerminalSession, ThemeTokens};
+pub use types::{
+    is_valid_tab, validate_tab, BackgroundTask, NotificationItem, TaskState, TerminalSession,
+    ThemeTokens, CANONICAL_TABS,
+};

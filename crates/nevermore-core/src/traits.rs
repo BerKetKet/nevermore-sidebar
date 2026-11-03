@@ -13,7 +13,13 @@ pub enum AdapterError {
     Unsupported(String),
 }
 
-/// Abstract compositor interface to isolate Wayland/KWin specific logic.
+/// Trait for raising external desktop application windows via compositor scripting or D-Bus.
+pub trait WindowRaiser: Send + Sync {
+    /// Activate or raise an external application window by desktop entry name.
+    fn raise_application(&self, desktop_entry: &str) -> Result<(), AdapterError>;
+}
+
+/// Abstract compositor interface to isolate Wayland layer-shell specific logic.
 pub trait EdgeAdapter: Send + Sync {
     /// Configure right-edge wlr-layer-shell surface on TOP layer with zero strut.
     fn setup_layer_surface(&self, width: u32) -> Result<(), AdapterError>;
@@ -29,9 +35,6 @@ pub trait EdgeAdapter: Send + Sync {
 
     /// Release physical keyboard focus back to the underlying desktop window.
     fn release_keyboard_focus(&self) -> Result<(), AdapterError>;
-
-    /// Activate or raise an external application window by desktop entry name.
-    fn raise_application(&self, desktop_entry: &str) -> Result<(), AdapterError>;
 }
 
 #[derive(Debug, Error)]

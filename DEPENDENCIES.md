@@ -51,3 +51,17 @@ All Cargo dependencies use exact `=` version pins in `Cargo.toml`:
 | `serde_json` | `=1.0.154` | JSON serialization for IPC and tasks |
 | `thiserror` | `=2.0.21` | Strongly typed domain errors |
 | `clap` | `=4.6.7` | Command-line interface argument parsing |
+| `gtk4` | `=0.11.5` | GTK4 Rust bindings |
+| `gtk4-layer-shell` | `=0.8.1` | Wayland Layer Shell bindings for GTK4 |
+| `vte4` | `=0.10.0` | VTE4 terminal widget bindings for GTK4 |
+| `glib` | `=0.22.10` | GLib bindings and main loop integration |
+| `gio` | `=0.22.10` | GIO bindings |
+| `async-channel` | `=2.5.0` | Zero-polling async event channel for GTK4 main loop |
+
+---
+
+## 🎨 Asset Dependencies & Licenses
+
+| Asset | Location | License | Description |
+| :--- | :--- | :--- | :--- |
+| **Lucide SVG Icons** | `crates/nevermore-ui/resources/icons/` | MIT License | 9 custom monochrome vector icons for canonical navigation tabs |

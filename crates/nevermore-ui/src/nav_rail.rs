@@ -1,19 +1,47 @@
+use gtk4::gdk;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, EventControllerScroll, EventControllerScrollFlags, Orientation};
+use gtk4::{
+    Box as GtkBox, Button, EventControllerScroll, EventControllerScrollFlags, Image, Orientation,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub const TABS: &[(&str, &str)] = &[
-    ("terminal", "TERM"),
-    ("widgets", "WIDG"),
-    ("notifications", "NOTI"),
-    ("notes", "NOTE"),
-    ("media", "MED"),
-    ("ai", "AI"),
-    ("youtube", "YT"),
-    ("vpn", "VPN"),
-    ("email", "MAIL"),
+const ICON_TERMINAL: &[u8] = include_bytes!("../resources/icons/terminal.svg");
+const ICON_WIDGETS: &[u8] = include_bytes!("../resources/icons/widgets.svg");
+const ICON_NOTIFICATIONS: &[u8] = include_bytes!("../resources/icons/notifications.svg");
+const ICON_NOTEPAD: &[u8] = include_bytes!("../resources/icons/notepad.svg");
+const ICON_MEDIA: &[u8] = include_bytes!("../resources/icons/media.svg");
+const ICON_GEMINI: &[u8] = include_bytes!("../resources/icons/gemini.svg");
+const ICON_YOUTUBE: &[u8] = include_bytes!("../resources/icons/youtube.svg");
+const ICON_VPN: &[u8] = include_bytes!("../resources/icons/vpn.svg");
+const ICON_EMAIL: &[u8] = include_bytes!("../resources/icons/email.svg");
+
+pub const TABS: &[(&str, &str, &str)] = &[
+    ("terminal", "TERM", "Terminal"),
+    ("widgets", "WIDG", "Widgets"),
+    ("notifications", "NOTI", "Notifications"),
+    ("notepad", "NOTE", "Notepad"),
+    ("media", "MED", "Media Player"),
+    ("gemini", "GEM", "Gemini Chat"),
+    ("youtube", "YT", "YouTube"),
+    ("vpn", "VPN", "VPN Status"),
+    ("email", "MAIL", "Email"),
 ];
+
+fn icon_for_tab(id: &str) -> &'static [u8] {
+    match id {
+        "terminal" => ICON_TERMINAL,
+        "widgets" => ICON_WIDGETS,
+        "notifications" => ICON_NOTIFICATIONS,
+        "notepad" => ICON_NOTEPAD,
+        "media" => ICON_MEDIA,
+        "gemini" => ICON_GEMINI,
+        "youtube" => ICON_YOUTUBE,
+        "vpn" => ICON_VPN,
+        "email" => ICON_EMAIL,
+        _ => ICON_TERMINAL,
+    }
+}
 
 pub struct NavRail {
     container: GtkBox,
@@ -28,14 +56,26 @@ impl NavRail {
     {
         let container = GtkBox::new(Orientation::Vertical, 4);
         container.set_size_request(60, -1);
+        container.set_hexpand(false);
         container.add_css_class("nav-rail");
 
         let active_tab = Rc::new(RefCell::new("terminal".to_string()));
         let mut buttons = Vec::new();
 
-        for (id, label) in TABS {
-            let btn = Button::with_label(label);
+        for (id, label, tooltip) in TABS {
+            let btn = Button::new();
             btn.add_css_class("nav-btn");
+            btn.set_tooltip_text(Some(tooltip));
+
+            let bytes = glib::Bytes::from_static(icon_for_tab(id));
+            if let Ok(texture) = gdk::Texture::from_bytes(&bytes) {
+                let img = Image::from_paintable(Some(&texture));
+                img.set_pixel_size(20);
+                btn.set_child(Some(&img));
+            } else {
+                btn.set_label(label);
+            }
+
             if *id == "terminal" {
                 btn.add_css_class("active");
             }
@@ -67,7 +107,7 @@ impl NavRail {
         scroll_ctrl.connect_scroll(move |_, dx, _| {
             if dx.abs() > 0.5 {
                 let cur = nav_clone.active_tab.borrow().clone();
-                let current_idx = TABS.iter().position(|(id, _)| *id == cur).unwrap_or(0);
+                let current_idx = TABS.iter().position(|(id, _, _)| *id == cur).unwrap_or(0);
                 let next_idx = if dx > 0.0 {
                     (current_idx + 1) % TABS.len()
                 } else if current_idx == 0 {

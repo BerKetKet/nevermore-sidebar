@@ -1,11 +1,11 @@
-use crate::traits::{AdapterError, EdgeAdapter};
+use crate::traits::{AdapterError, WindowRaiser};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// KWin Wayland EdgeAdapter implementing window raising and compositor interaction.
+/// KWin Wayland window raiser implementing external application activation via KWin scripting DBus.
 #[derive(Debug, Default, Clone)]
 pub struct KWinAdapter;
 
@@ -15,28 +15,7 @@ impl KWinAdapter {
     }
 }
 
-impl EdgeAdapter for KWinAdapter {
-    fn setup_layer_surface(&self, _width: u32) -> Result<(), AdapterError> {
-        // Handled via gtk4-layer-shell / wlr-layer-shell in the UI process
-        Ok(())
-    }
-
-    fn show_panel(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
-    fn hide_panel(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
-    fn request_keyboard_focus(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
-    fn release_keyboard_focus(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
+impl WindowRaiser for KWinAdapter {
     fn raise_application(&self, desktop_entry: &str) -> Result<(), AdapterError> {
         // Validate desktop_entry against ^[A-Za-z0-9_.-]+$
         if desktop_entry.is_empty()

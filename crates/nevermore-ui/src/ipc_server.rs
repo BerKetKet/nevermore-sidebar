@@ -1,7 +1,6 @@
 use nevermore_core::ipc::{create_ipc_listener, default_socket_path, IpcRequest, IpcResponse};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub struct IpcCommand {
@@ -9,14 +8,8 @@ pub struct IpcCommand {
     pub responder: Sender<IpcResponse>,
 }
 
-pub type CommandQueue = Arc<Mutex<Vec<IpcCommand>>>;
-
-pub fn new_command_queue() -> CommandQueue {
-    Arc::new(Mutex::new(Vec::new()))
-}
-
-/// Spawns the background Unix domain socket listener thread.
-pub fn start_ipc_server(queue: CommandQueue) -> std::io::Result<()> {
+/// Spawns the background Unix domain socket listener thread, delivering commands directly to the GLib main loop.
+pub fn start_ipc_server(sender: async_channel::Sender<IpcCommand>) -> std::io::Result<()> {
     let socket_path = default_socket_path();
     let listener = create_ipc_listener(&socket_path)?;
 
@@ -51,7 +44,9 @@ pub fn start_ipc_server(queue: CommandQueue) -> std::io::Result<()> {
                 responder: tx,
             };
 
-            queue.lock().unwrap().push(cmd);
+            if sender.send_blocking(cmd).is_err() {
+                break;
+            }
 
             // Wait for UI to process the command
             if let Ok(response) = rx.recv() {

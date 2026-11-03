@@ -1,3 +1,4 @@
+use crate::types::validate_tab;
 use serde::{Deserialize, Serialize};
 
 /// The four explicit states of the Nevermore sidebar.
@@ -85,8 +86,18 @@ impl SidebarStateMachine {
         &self.active_tab
     }
 
-    pub fn set_active_tab(&mut self, tab: impl Into<String>) {
-        self.active_tab = tab.into();
+    pub fn set_active_tab(&mut self, tab: impl AsRef<str>) -> Result<(), String> {
+        let canonical = validate_tab(tab.as_ref())?;
+        self.active_tab = canonical.to_string();
+        Ok(())
+    }
+
+    fn apply_show_tab(&mut self, tab: Option<String>) {
+        if let Some(t) = tab {
+            if let Ok(canonical) = validate_tab(&t) {
+                self.active_tab = canonical.to_string();
+            }
+        }
     }
 
     /// Transitions the state machine based on an incoming event and returns the new state.
@@ -96,9 +107,7 @@ impl SidebarStateMachine {
             (SidebarState::Hidden, SidebarEvent::PointerEnterEdge) => SidebarState::Peek,
             (SidebarState::Hidden, SidebarEvent::PointerClickInside) => SidebarState::Engaged,
             (SidebarState::Hidden, SidebarEvent::CliShow { tab }) => {
-                if let Some(t) = tab {
-                    self.active_tab = t;
-                }
+                self.apply_show_tab(tab);
                 SidebarState::Engaged
             }
             (SidebarState::Hidden, SidebarEvent::CliToggle) => SidebarState::Engaged,
@@ -120,9 +129,7 @@ impl SidebarStateMachine {
             (SidebarState::Peek, SidebarEvent::CliHide) => SidebarState::Hidden,
             (SidebarState::Peek, SidebarEvent::CliToggle) => SidebarState::Hidden,
             (SidebarState::Peek, SidebarEvent::CliShow { tab }) => {
-                if let Some(t) = tab {
-                    self.active_tab = t;
-                }
+                self.apply_show_tab(tab);
                 SidebarState::Engaged
             }
             (SidebarState::Peek, _) => SidebarState::Peek,
@@ -159,9 +166,7 @@ impl SidebarStateMachine {
                 SidebarState::Hidden
             }
             (SidebarState::Engaged, SidebarEvent::CliShow { tab }) => {
-                if let Some(t) = tab {
-                    self.active_tab = t;
-                }
+                self.apply_show_tab(tab);
                 SidebarState::Engaged
             }
             (SidebarState::Engaged, _) => SidebarState::Engaged,
@@ -180,9 +185,7 @@ impl SidebarStateMachine {
                 SidebarState::Hidden
             }
             (SidebarState::Pinned, SidebarEvent::CliShow { tab }) => {
-                if let Some(t) = tab {
-                    self.active_tab = t;
-                }
+                self.apply_show_tab(tab);
                 SidebarState::Pinned
             }
             (SidebarState::Pinned, SidebarEvent::EscapePressed) => {
@@ -272,9 +275,27 @@ mod tests {
     fn test_tab_switching_on_show() {
         let mut sm = SidebarStateMachine::new();
         sm.transition(SidebarEvent::CliShow {
-            tab: Some("tasks".into()),
+            tab: Some("notepad".into()),
         });
         assert_eq!(sm.state(), SidebarState::Engaged);
-        assert_eq!(sm.active_tab(), "tasks");
+        assert_eq!(sm.active_tab(), "notepad");
+    }
+
+    #[test]
+    fn test_invalid_tab_rejected() {
+        let mut sm = SidebarStateMachine::new();
+        assert_eq!(sm.active_tab(), "terminal");
+
+        // Transition with invalid tab should engage but NOT switch active_tab
+        sm.transition(SidebarEvent::CliShow {
+            tab: Some("invalid_tab_xyz".into()),
+        });
+        assert_eq!(sm.state(), SidebarState::Engaged);
+        assert_eq!(sm.active_tab(), "terminal");
+
+        // Explicit setter should return Err on invalid tab
+        assert!(sm.set_active_tab("invalid_name").is_err());
+        assert!(sm.set_active_tab("widgets").is_ok());
+        assert_eq!(sm.active_tab(), "widgets");
     }
 }

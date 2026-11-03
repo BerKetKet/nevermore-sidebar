@@ -6,16 +6,17 @@ use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, EventControllerKey,
-    EventControllerMotion, GestureClick, Label, Orientation, Stack,
+    EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick, Label,
+    Orientation, Stack,
 };
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
-use ipc_server::{new_command_queue, start_ipc_server};
+use ipc_server::start_ipc_server;
 use nav_rail::NavRail;
 use nevermore_core::ipc::IpcResponse;
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::state::{SidebarEvent, SidebarState, SidebarStateMachine};
 use nevermore_core::tmux::TmuxBackend;
-use nevermore_core::traits::{EdgeAdapter, SessionBackend, TaskBackend};
+use nevermore_core::traits::{SessionBackend, TaskBackend, WindowRaiser};
 use nevermore_core::SystemdTaskBackend;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,9 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use terminal_pane::TerminalPane;
 
-const PANEL_WIDTH: i32 = 380;
-const HOT_EDGE_WIDTH: i32 = 2;
-const AUTO_HIDE_DELAY_MS: u32 = 250;
+pub const PANEL_WIDTH: i32 = 400;
+pub const NAV_RAIL_WIDTH: i32 = 60;
+pub const CONTENT_WIDTH: i32 = 340;
+pub const HOT_EDGE_WIDTH: i32 = 2;
+pub const AUTO_HIDE_DELAY_MS: u32 = 250;
 
 fn get_process_rss_mb() -> f64 {
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
@@ -64,23 +67,47 @@ fn main() {
             );
         }
 
-        // 2. Build Layer-Shell Window
-        let window = ApplicationWindow::builder()
+        // 2A. Build 2px Hot-Edge Layer-Shell Window (active only when Hidden)
+        let hot_edge_window = ApplicationWindow::builder()
+            .application(app)
+            .title("Nevermore Hot Edge")
+            .default_height(1080)
+            .build();
+
+        hot_edge_window.init_layer_shell();
+        hot_edge_window.set_layer(Layer::Top);
+        hot_edge_window.set_exclusive_zone(0);
+        hot_edge_window.set_anchor(Edge::Right, true);
+        hot_edge_window.set_anchor(Edge::Top, true);
+        hot_edge_window.set_anchor(Edge::Bottom, true);
+        hot_edge_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+        hot_edge_window.set_size_request(HOT_EDGE_WIDTH, -1);
+
+        let hot_edge_box = GtkBox::new(Orientation::Vertical, 0);
+        hot_edge_box.add_css_class("hot-edge-strip");
+        hot_edge_box.set_size_request(HOT_EDGE_WIDTH, -1);
+        hot_edge_window.set_child(Some(&hot_edge_box));
+
+        // 2B. Build 400px Main Sidebar Panel Window
+        let panel_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Wayland Sidebar")
             .default_height(1080)
             .build();
 
-        window.init_layer_shell();
-        window.set_layer(Layer::Top);
-        window.set_exclusive_zone(0);
-        window.set_anchor(Edge::Right, true);
-        window.set_anchor(Edge::Top, true);
-        window.set_anchor(Edge::Bottom, true);
-        window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+        panel_window.init_layer_shell();
+        panel_window.set_layer(Layer::Top);
+        panel_window.set_exclusive_zone(0);
+        panel_window.set_anchor(Edge::Right, true);
+        panel_window.set_anchor(Edge::Top, true);
+        panel_window.set_anchor(Edge::Bottom, true);
+        panel_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
 
-        // Start in Hidden mode (2px hot strip)
-        window.set_size_request(HOT_EDGE_WIDTH, -1);
+        // Lock window width strictly to 400px
+        panel_window.set_size_request(PANEL_WIDTH, -1);
+        panel_window.set_default_size(PANEL_WIDTH, -1);
+        panel_window.set_resizable(false);
+        panel_window.add_css_class("sidebar-panel");
 
         // 3. State Machine & Domain Backends
         let state_machine = Arc::new(Mutex::new(SidebarStateMachine::new()));
@@ -88,8 +115,10 @@ fn main() {
         let systemd = SystemdTaskBackend::new("nevermore-task");
         let kwin = KWinAdapter::new();
 
-        // 4. Construct Layout
+        // 4. Construct Layout locked to 400px (60px rail + 340px content)
         let main_box = GtkBox::new(Orientation::Horizontal, 0);
+        main_box.set_size_request(PANEL_WIDTH, -1);
+        main_box.set_hexpand(false);
 
         // Nav Rail
         let content_stack = Stack::new();
@@ -99,13 +128,16 @@ fn main() {
         let c_stack = content_stack.clone();
         let sm_for_nav = state_machine.clone();
         let nav_rail = NavRail::new(move |tab_name| {
-            sm_for_nav.lock().unwrap().set_active_tab(tab_name);
+            let _ = sm_for_nav.lock().unwrap().set_active_tab(tab_name);
             c_stack.set_visible_child_name(tab_name);
         });
+        nav_rail.widget().set_size_request(NAV_RAIL_WIDTH, -1);
+        nav_rail.widget().set_hexpand(false);
 
         // Content Area with Header
         let content_area = GtkBox::new(Orientation::Vertical, 0);
-        content_area.set_hexpand(true);
+        content_area.set_size_request(CONTENT_WIDTH, -1);
+        content_area.set_hexpand(false);
         content_area.set_vexpand(true);
 
         // Header
@@ -116,20 +148,53 @@ fn main() {
         title_lbl.add_css_class("header-title");
         title_lbl.set_hexpand(true);
         title_lbl.set_xalign(0.0);
+        title_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
         let badge_state = Label::new(Some("HIDDEN"));
         badge_state.add_css_class("badge-state");
 
-        let btn_pin = Button::with_label("📌 PIN");
+        let btn_pin = Button::with_label("📌");
+        btn_pin.set_tooltip_text(Some("Toggle Pin"));
         btn_pin.add_css_class("btn-header-pin");
 
         let btn_close = Button::with_label("✕");
+        btn_close.set_tooltip_text(Some("Close Sidebar (Escape)"));
         btn_close.add_css_class("btn-header-close");
 
         header.append(&title_lbl);
         header.append(&badge_state);
         header.append(&btn_pin);
         header.append(&btn_close);
+
+        // Attach horizontal swipe gesture controller to Header Bar (Fix 8 - Zone Rule)
+        let header_scroll_ctrl = EventControllerScroll::new(EventControllerScrollFlags::HORIZONTAL);
+        let nav_for_header = nav_rail.clone();
+        let c_stack_for_header = content_stack.clone();
+        let sm_for_header = state_machine.clone();
+        header_scroll_ctrl.connect_scroll(move |_, dx, _| {
+            if dx.abs() > 0.5 {
+                let cur = sm_for_header.lock().unwrap().active_tab().to_string();
+                let current_idx = nav_rail::TABS
+                    .iter()
+                    .position(|(id, _, _)| *id == cur)
+                    .unwrap_or(0);
+                let next_idx = if dx > 0.0 {
+                    (current_idx + 1) % nav_rail::TABS.len()
+                } else if current_idx == 0 {
+                    nav_rail::TABS.len() - 1
+                } else {
+                    current_idx - 1
+                };
+                let next_tab = nav_rail::TABS[next_idx].0;
+                let _ = sm_for_header.lock().unwrap().set_active_tab(next_tab);
+                nav_for_header.set_active_tab(next_tab);
+                c_stack_for_header.set_visible_child_name(next_tab);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        header.add_controller(header_scroll_ctrl);
 
         content_area.append(&header);
         content_area.append(&content_stack);
@@ -139,7 +204,7 @@ fn main() {
         content_stack.add_named(terminal_pane.widget(), Some("terminal"));
 
         // Placeholder pages for other 8 tabs
-        for (tab_id, tab_label) in nav_rail::TABS {
+        for (tab_id, _, tab_label) in nav_rail::TABS {
             if *tab_id != "terminal" {
                 let tab_box = GtkBox::new(Orientation::Vertical, 12);
                 tab_box.set_hexpand(true);
@@ -147,8 +212,12 @@ fn main() {
                 tab_box.set_valign(gtk4::Align::Center);
                 tab_box.set_halign(gtk4::Align::Center);
 
-                let placeholder =
-                    Label::new(Some(&format!("NEVERMORE // {}\n(Phase 7 Tab)", tab_label)));
+                let text = if *tab_id == "email" {
+                    "NEVERMORE // EMAIL\nEmail Feasibility — Phase 11 Spike".to_string()
+                } else {
+                    format!("NEVERMORE // {}\n(Phase 7 Tab)", tab_label)
+                };
+                let placeholder = Label::new(Some(&text));
                 placeholder.add_css_class("header-title");
                 tab_box.append(&placeholder);
                 content_stack.add_named(&tab_box, Some(tab_id));
@@ -157,11 +226,12 @@ fn main() {
 
         main_box.append(nav_rail.widget());
         main_box.append(&content_area);
-        window.set_child(Some(&main_box));
+        panel_window.set_child(Some(&main_box));
 
         // Shared Context for Visual Updates
         struct UiContext {
-            window: ApplicationWindow,
+            hot_edge_window: ApplicationWindow,
+            panel_window: ApplicationWindow,
             state_machine: Arc<Mutex<SidebarStateMachine>>,
             badge_state: Label,
             btn_pin: Button,
@@ -172,7 +242,8 @@ fn main() {
         }
 
         let ctx = Rc::new(UiContext {
-            window: window.clone(),
+            hot_edge_window: hot_edge_window.clone(),
+            panel_window: panel_window.clone(),
             state_machine: state_machine.clone(),
             badge_state: badge_state.clone(),
             btn_pin: btn_pin.clone(),
@@ -198,17 +269,17 @@ fn main() {
 
                 match state {
                     SidebarState::Hidden => {
-                        ctx.window.set_size_request(HOT_EDGE_WIDTH, -1);
-                        ctx.window
-                            .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+                        ctx.panel_window.set_visible(false);
+                        ctx.hot_edge_window.set_visible(true);
                         ctx.badge_state.set_label("HIDDEN");
                         ctx.badge_state.remove_css_class("engaged");
                         ctx.badge_state.remove_css_class("pinned");
                         ctx.btn_pin.remove_css_class("pinned");
                     }
                     SidebarState::Peek => {
-                        ctx.window.set_size_request(PANEL_WIDTH, -1);
-                        ctx.window
+                        ctx.hot_edge_window.set_visible(false);
+                        ctx.panel_window.set_visible(true);
+                        ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
                         ctx.badge_state.set_label("PEEK");
                         ctx.badge_state.remove_css_class("engaged");
@@ -216,8 +287,9 @@ fn main() {
                         ctx.btn_pin.remove_css_class("pinned");
                     }
                     SidebarState::Engaged => {
-                        ctx.window.set_size_request(PANEL_WIDTH, -1);
-                        ctx.window
+                        ctx.hot_edge_window.set_visible(false);
+                        ctx.panel_window.set_visible(true);
+                        ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
                         ctx.badge_state.set_label("ENGAGED");
                         ctx.badge_state.add_css_class("engaged");
@@ -225,8 +297,9 @@ fn main() {
                         ctx.btn_pin.remove_css_class("pinned");
                     }
                     SidebarState::Pinned => {
-                        ctx.window.set_size_request(PANEL_WIDTH, -1);
-                        ctx.window
+                        ctx.hot_edge_window.set_visible(false);
+                        ctx.panel_window.set_visible(true);
+                        ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
                         ctx.badge_state.set_label("PINNED");
                         ctx.badge_state.remove_css_class("engaged");
@@ -261,52 +334,55 @@ fn main() {
             apply_close();
         });
 
-        // Click inside to Engage
-        let gesture = GestureClick::new();
+        // Pointer Enter on Hot Edge Window (Hidden -> Peek)
+        let edge_motion = EventControllerMotion::new();
+        let apply_edge = apply_state.clone();
+        let ctx_edge = ctx.clone();
+        edge_motion.connect_enter(move |_, _, _| {
+            ctx_edge
+                .state_machine
+                .lock()
+                .unwrap()
+                .transition(SidebarEvent::PointerEnterEdge);
+            apply_edge();
+        });
+        hot_edge_window.add_controller(edge_motion);
+
+        // Click inside Panel Window (Peek -> Engaged)
+        let click_inside = GestureClick::new();
         let apply_click = apply_state.clone();
         let ctx_click = ctx.clone();
-        gesture.connect_pressed(move |_, _, _, _| {
-            let mut sm = ctx_click.state_machine.lock().unwrap();
-            if sm.state() != SidebarState::Pinned {
-                sm.transition(SidebarEvent::PointerClickInside);
-            }
-            drop(sm);
+        click_inside.connect_pressed(move |_, _, _, _| {
+            ctx_click
+                .state_machine
+                .lock()
+                .unwrap()
+                .transition(SidebarEvent::PointerClickInside);
             apply_click();
         });
-        main_box.add_controller(gesture);
+        panel_window.add_controller(click_inside);
 
-        // Motion Controller (Hot-Edge Hover and Pointer Leave)
-        let motion = EventControllerMotion::new();
-        let apply_motion = apply_state.clone();
-        let ctx_motion = ctx.clone();
+        // Motion Controller on Panel Window (Cancel debounce on enter, auto-hide on leave)
+        let panel_motion = EventControllerMotion::new();
+        let ctx_leave = ctx.clone();
 
-        motion.connect_enter(move |_, _, _| {
-            if let Some(source) = ctx_motion.leave_source.borrow_mut().take() {
-                source.remove();
-            }
-
-            let mut sm = ctx_motion.state_machine.lock().unwrap();
-            if sm.state() == SidebarState::Hidden {
-                sm.transition(SidebarEvent::PointerEnterEdge);
-                drop(sm);
-                apply_motion();
+        panel_motion.connect_enter(move |_, _, _| {
+            if let Some(source_id) = ctx_leave.leave_source.borrow_mut().take() {
+                source_id.remove();
             }
         });
 
-        let apply_leave = apply_state.clone();
-        let ctx_leave = ctx.clone();
-        motion.connect_leave(move |_| {
-            let sm = ctx_leave.state_machine.lock().unwrap();
-            let state = sm.state();
-            drop(sm);
-
-            if state == SidebarState::Pinned {
-                return;
+        let ctx_timer_leave = ctx.clone();
+        let apply_timer = apply_state.clone();
+        panel_motion.connect_leave(move |_| {
+            if let Some(source_id) = ctx_timer_leave.leave_source.borrow_mut().take() {
+                source_id.remove();
             }
 
-            let ctx_timer = ctx_leave.clone();
-            let apply_timer = apply_leave.clone();
-            let source_id = glib::timeout_add_local_once(
+            let ctx_timer = ctx_timer_leave.clone();
+            let apply_timer_cb = apply_timer.clone();
+
+            let source_id = glib::timeout_add_local(
                 std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
                 move || {
                     ctx_timer.leave_source.borrow_mut().take();
@@ -314,20 +390,19 @@ fn main() {
                     if sm.state() != SidebarState::Pinned {
                         sm.transition(SidebarEvent::PointerLeavePanel);
                         drop(sm);
-                        apply_timer();
+                        apply_timer_cb();
                     }
+                    glib::ControlFlow::Break
                 },
             );
-            *ctx_leave.leave_source.borrow_mut() = Some(source_id);
+            *ctx_timer_leave.leave_source.borrow_mut() = Some(source_id);
         });
-
-        main_box.add_controller(motion);
+        panel_window.add_controller(panel_motion);
 
         // Key Controller (Escape key to hide or un-focus)
         let key_ctrl = EventControllerKey::new();
         let apply_key = apply_state.clone();
         let ctx_key = ctx.clone();
-
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::Escape {
                 let mut sm = ctx_key.state_machine.lock().unwrap();
@@ -339,21 +414,18 @@ fn main() {
                 glib::Propagation::Proceed
             }
         });
+        panel_window.add_controller(key_ctrl);
 
-        window.add_controller(key_ctrl);
-
-        // 6. Connect IPC Server Queue to Main Context Polling
-        let cmd_queue = new_command_queue();
-        let queue_clone = cmd_queue.clone();
+        // 6. Connect IPC Server Channel (Zero-polling event-driven channel)
+        let (ipc_tx, ipc_rx) = async_channel::unbounded::<ipc_server::IpcCommand>();
         let apply_ipc = apply_state.clone();
         let ctx_ipc = ctx.clone();
         let tmux_ipc = tmux.clone();
         let systemd_ipc = systemd.clone();
         let kwin_ipc = kwin.clone();
 
-        glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-            let mut q = queue_clone.lock().unwrap();
-            for cmd in q.drain(..) {
+        glib::spawn_future_local(async move {
+            while let Ok(cmd) = ipc_rx.recv().await {
                 let start_t = Instant::now();
                 let response = match cmd.request {
                     nevermore_core::ipc::IpcRequest::Toggle => {
@@ -375,31 +447,58 @@ fn main() {
                         }
                     }
                     nevermore_core::ipc::IpcRequest::Show { tab } => {
-                        let mut sm = ctx_ipc.state_machine.lock().unwrap();
-                        let next = sm.transition(SidebarEvent::CliShow { tab });
-                        let active = sm.active_tab().to_string();
-                        drop(sm);
-                        apply_ipc();
-                        let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
-                        println!("[IPC] Show executed in {:.2} ms -> {:?}", latency_ms, next);
-                        IpcResponse::State {
-                            state: next,
-                            active_tab: active,
-                            is_visible: next.is_visible(),
-                            takes_focus: next.takes_keyboard_focus(),
+                        if let Some(ref t) = tab {
+                            if !nevermore_core::is_valid_tab(t) {
+                                IpcResponse::Error(format!(
+                                    "Invalid tab '{}'. Valid tabs are: {:?}",
+                                    t,
+                                    nevermore_core::CANONICAL_TABS
+                                ))
+                            } else {
+                                let mut sm = ctx_ipc.state_machine.lock().unwrap();
+                                let next = sm.transition(SidebarEvent::CliShow { tab });
+                                let active = sm.active_tab().to_string();
+                                drop(sm);
+                                apply_ipc();
+                                let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
+                                println!(
+                                    "[IPC] Show executed in {:.2} ms -> {:?}",
+                                    latency_ms, next
+                                );
+                                IpcResponse::State {
+                                    state: next,
+                                    active_tab: active,
+                                    is_visible: next.is_visible(),
+                                    takes_focus: next.takes_keyboard_focus(),
+                                }
+                            }
+                        } else {
+                            let mut sm = ctx_ipc.state_machine.lock().unwrap();
+                            let next = sm.transition(SidebarEvent::CliShow { tab });
+                            let active = sm.active_tab().to_string();
+                            drop(sm);
+                            apply_ipc();
+                            let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
+                            println!("[IPC] Show executed in {:.2} ms -> {:?}", latency_ms, next);
+                            IpcResponse::State {
+                                state: next,
+                                active_tab: active,
+                                is_visible: next.is_visible(),
+                                takes_focus: next.takes_keyboard_focus(),
+                            }
                         }
                     }
                     nevermore_core::ipc::IpcRequest::Hide => {
                         let mut sm = ctx_ipc.state_machine.lock().unwrap();
                         let next = sm.transition(SidebarEvent::CliHide);
-                        let active = sm.active_tab().to_string();
+                        let tab = sm.active_tab().to_string();
                         drop(sm);
                         apply_ipc();
                         let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
                         println!("[IPC] Hide executed in {:.2} ms -> {:?}", latency_ms, next);
                         IpcResponse::State {
                             state: next,
-                            active_tab: active,
+                            active_tab: tab,
                             is_visible: next.is_visible(),
                             takes_focus: next.takes_keyboard_focus(),
                         }
@@ -407,33 +506,32 @@ fn main() {
                     nevermore_core::ipc::IpcRequest::Pin => {
                         let mut sm = ctx_ipc.state_machine.lock().unwrap();
                         let next = sm.transition(SidebarEvent::CliPin);
-                        let active = sm.active_tab().to_string();
+                        let tab = sm.active_tab().to_string();
                         drop(sm);
                         apply_ipc();
+                        let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
+                        println!("[IPC] Pin executed in {:.2} ms -> {:?}", latency_ms, next);
                         IpcResponse::State {
                             state: next,
-                            active_tab: active,
+                            active_tab: tab,
                             is_visible: next.is_visible(),
                             takes_focus: next.takes_keyboard_focus(),
                         }
                     }
                     nevermore_core::ipc::IpcRequest::Status => {
                         let sm = ctx_ipc.state_machine.lock().unwrap();
-                        let state = sm.state();
-                        let active = sm.active_tab().to_string();
                         IpcResponse::State {
-                            state,
-                            active_tab: active,
-                            is_visible: state.is_visible(),
-                            takes_focus: state.takes_keyboard_focus(),
+                            state: sm.state(),
+                            active_tab: sm.active_tab().to_string(),
+                            is_visible: sm.state().is_visible(),
+                            takes_focus: sm.state().takes_keyboard_focus(),
                         }
                     }
-                    nevermore_core::ipc::IpcRequest::ListSessions => {
-                        match tmux_ipc.list_sessions() {
-                            Ok(sessions) => IpcResponse::Sessions(sessions),
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
-                    }
+                    nevermore_core::ipc::IpcRequest::ListSessions => match tmux_ipc.list_sessions()
+                    {
+                        Ok(sessions) => IpcResponse::Sessions(sessions),
+                        Err(e) => IpcResponse::Error(e.to_string()),
+                    },
                     nevermore_core::ipc::IpcRequest::CreateSession { name } => {
                         match tmux_ipc.create_session(&name) {
                             Ok(_) => IpcResponse::Ok,
@@ -476,13 +574,11 @@ fn main() {
                         }
                     }
                 };
-
                 let _ = cmd.responder.send(response);
             }
-            glib::ControlFlow::Continue
         });
 
-        if let Err(e) = start_ipc_server(cmd_queue) {
+        if let Err(e) = start_ipc_server(ipc_tx) {
             eprintln!("[ERROR] Failed to start IPC socket server: {}", e);
         } else {
             println!(
@@ -491,7 +587,10 @@ fn main() {
             );
         }
 
-        window.present();
+        // Present initial UI in Hidden mode
+        hot_edge_window.present();
+        panel_window.set_visible(false);
+
         println!(
             "[NEVERMORE] UI initialized. Initial RSS: {:.2} MB",
             get_process_rss_mb()

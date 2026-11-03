@@ -148,15 +148,16 @@ class CDPConnection:
             del self.buf[:total_frame_len]
             return json.loads(payload.decode('utf-8', errors='replace'))
 
-    def call(self, method, params=None, use_session=True):
+    def call(self, method, params=None, use_session=True, session_id=None):
         with self.lock:
             self.msg_id += 1
             mid = self.msg_id
             payload = {'id': mid, 'method': method}
             if params is not None:
                 payload['params'] = params
-            if use_session and self.session_id:
-                payload['sessionId'] = self.session_id
+            sid = session_id if session_id is not None else (self.session_id if use_session else None)
+            if sid:
+                payload['sessionId'] = sid
             self._send_frame(json.dumps(payload))
 
             while True:
@@ -234,16 +235,22 @@ class CDPConnection:
         js_count = "document.querySelectorAll('message-content, .model-response-text').length"
         initial_count = self.evaluate(js_count) or 0
 
-        # Focus editor
-        js_focus = """
+        # Focus and clear editor
+        js_focus_and_clear = """
         (() => {
             const ql = document.querySelector('rich-textarea div.ql-editor') || document.querySelector('rich-textarea [contenteditable="true"]');
             if (!ql) return false;
             ql.focus();
+            try {
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+            } catch(e) {}
+            ql.innerHTML = '<p><br></p>';
+            ql.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
         })()
         """
-        if not self.evaluate(js_focus):
+        if not self.evaluate(js_focus_and_clear):
             raise RuntimeError("Could not find or focus chat editor element")
 
         time.sleep(0.3)
@@ -339,7 +346,13 @@ def file_spool_loop(cdp):
             os.replace(STATUS_FILE + ".tmp", STATUS_FILE)
 
             if os.path.exists(OUTBOX) and os.path.getsize(OUTBOX) > 0:
-                with open(OUTBOX, "r", encoding="utf-8") as f:
+                processing_file = OUTBOX + ".processing"
+                try:
+                    os.replace(OUTBOX, processing_file)
+                except OSError:
+                    continue
+
+                with open(processing_file, "r", encoding="utf-8") as f:
                     msg = f.read().strip()
                 if msg:
                     print(f"[Bridge Spool] Found outbox.md ({len(msg)} bytes). Transmitting to Manager AI...", flush=True)
@@ -350,16 +363,20 @@ def file_spool_loop(cdp):
                             f.write(reply_text)
                         os.replace(INBOX + ".tmp", INBOX)
                         try:
-                            os.unlink(OUTBOX)
+                            os.unlink(processing_file)
                         except OSError:
                             pass
-                        print(f"[Bridge Spool] Delivered response to inbox.md ({len(reply_text)} chars). Outbox removed.", flush=True)
+                        print(f"[Bridge Spool] Delivered response to inbox.md ({len(reply_text)} chars). Processing file removed.", flush=True)
                     else:
                         err = res.get("error", "Unknown error")
                         print(f"[Bridge Spool] Error sending message: {err}", flush=True)
                         with open(INBOX + ".tmp", "w", encoding="utf-8") as f:
                             f.write(f"[BRIDGE ERROR] {err}\n")
                         os.replace(INBOX + ".tmp", INBOX)
+                        try:
+                            os.unlink(processing_file)
+                        except OSError:
+                            pass
         except Exception as e:
             print(f"[Bridge Spool] Exception in spool loop: {e}", flush=True)
         time.sleep(1.0)
@@ -423,6 +440,13 @@ def run_daemon():
                     conn.sendall(json.dumps({'status': 'OK', 'result': res}).encode('utf-8'))
                 elif action == 'ping':
                     conn.sendall(json.dumps({'status': 'OK'}).encode('utf-8'))
+                elif action == 'call_cdp':
+                    method = req.get('method')
+                    params = req.get('params')
+                    use_session = req.get('use_session', True)
+                    session_id = req.get('session_id')
+                    res = cdp.call(method, params=params, use_session=use_session, session_id=session_id)
+                    conn.sendall(json.dumps({'status': 'OK', 'result': res}).encode('utf-8'))
                 else:
                     conn.sendall(json.dumps({'status': 'ERROR', 'error': 'Unknown action'}).encode('utf-8'))
             except (socket.error, RuntimeError) as e:
