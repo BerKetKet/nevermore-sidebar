@@ -1,0 +1,16 @@
+[Unit]
+Description=Nevermore Wayland Right-Edge Sidebar
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/bgg/projects/nevermore-sidebar/target/release/nevermore-ui
+Restart=always
+RestartSec=2
+Environment=GDK_BACKEND=wayland
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
+[Install]
+WantedBy=graphical-session.target

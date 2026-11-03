@@ -611,9 +611,13 @@ dependencies = [
 name = "nevermore-ui"
 version = "0.1.0"
 dependencies = [
+ "gio",
+ "glib",
  "gtk4",
  "gtk4-layer-shell",
  "nevermore-core",
+ "serde",
+ "serde_json",
  "vte4",
 ]
 
