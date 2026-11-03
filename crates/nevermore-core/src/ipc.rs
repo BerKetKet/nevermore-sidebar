@@ -54,6 +54,10 @@ pub enum IpcRequest {
     RaiseApp {
         desktop_entry: String,
     },
+    ListThemes,
+    SetTheme {
+        name: String,
+    },
 }
 
 /// Responses returned by the daemon.
@@ -69,6 +73,10 @@ pub enum IpcResponse {
     Sessions(Vec<TerminalSession>),
     Tasks(Vec<BackgroundTask>),
     Logs(String),
+    Themes {
+        active: String,
+        available: Vec<String>,
+    },
     Ok,
     Error(String),
 }
@@ -178,6 +186,79 @@ mod tests {
                 takes_focus: false,
             }
         );
+
+        handle.join().unwrap();
+        let _ = fs::remove_file(&sock_path);
+        let _ = fs::remove_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_ipc_theme_requests() {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let test_dir = env::temp_dir().join(format!("nevermore-theme-test-{}", ts));
+        fs::create_dir_all(&test_dir).unwrap();
+        let sock_path = test_dir.join("nevermore.sock");
+
+        let listener = create_ipc_listener(&sock_path).unwrap();
+
+        let handle = thread::spawn(move || {
+            // First request: ListThemes
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let req: IpcRequest = serde_json::from_str(&line).unwrap();
+            assert_eq!(req, IpcRequest::ListThemes);
+
+            let resp = IpcResponse::Themes {
+                active: "nevermore-dark".to_string(),
+                available: vec!["catppuccin-mocha".to_string(), "nevermore-dark".to_string()],
+            };
+            let mut out = serde_json::to_string(&resp).unwrap();
+            out.push('\n');
+            let mut writer = stream;
+            writer.write_all(out.as_bytes()).unwrap();
+
+            // Second request: SetTheme
+            let (stream2, _) = listener.accept().unwrap();
+            let mut reader2 = BufReader::new(&stream2);
+            let mut line2 = String::new();
+            reader2.read_line(&mut line2).unwrap();
+            let req2: IpcRequest = serde_json::from_str(&line2).unwrap();
+            assert_eq!(
+                req2,
+                IpcRequest::SetTheme {
+                    name: "catppuccin-mocha".to_string()
+                }
+            );
+
+            let resp2 = IpcResponse::Ok;
+            let mut out2 = serde_json::to_string(&resp2).unwrap();
+            out2.push('\n');
+            let mut writer2 = stream2;
+            writer2.write_all(out2.as_bytes()).unwrap();
+        });
+
+        let resp1 = send_ipc_request_to(&sock_path, &IpcRequest::ListThemes).unwrap();
+        assert_eq!(
+            resp1,
+            IpcResponse::Themes {
+                active: "nevermore-dark".to_string(),
+                available: vec!["catppuccin-mocha".to_string(), "nevermore-dark".to_string()],
+            }
+        );
+
+        let resp2 = send_ipc_request_to(
+            &sock_path,
+            &IpcRequest::SetTheme {
+                name: "catppuccin-mocha".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(resp2, IpcResponse::Ok);
 
         handle.join().unwrap();
         let _ = fs::remove_file(&sock_path);

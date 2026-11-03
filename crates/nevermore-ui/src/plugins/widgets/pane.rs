@@ -7,12 +7,16 @@ use std::rc::Rc;
 
 pub struct WidgetsPane {
     container: GtkBox,
+    time_lbl: Label,
+    date_lbl: Label,
     cpu_bar: ProgressBar,
     cpu_label: Label,
     ram_bar: ProgressBar,
     ram_label: Label,
     media_title: Label,
+    media_artist: Label,
     last_cpu: RefCell<Option<(u64, u64)>>,
+    timer_source: RefCell<Option<glib::SourceId>>,
 }
 
 impl WidgetsPane {
@@ -143,12 +147,16 @@ impl WidgetsPane {
 
         let pane = Rc::new(Self {
             container,
+            time_lbl,
+            date_lbl,
             cpu_bar,
             cpu_label,
             ram_bar,
             ram_label,
             media_title,
+            media_artist,
             last_cpu: RefCell::new(None),
+            timer_source: RefCell::new(None),
         });
 
         // Initialize Volume slider from wpctl
@@ -194,25 +202,6 @@ impl WidgetsPane {
             let _ = Self::send_mpris_cmd("Next");
         });
 
-        // Initial update
-        pane.update_clock(&time_lbl, &date_lbl);
-        pane.update_metrics();
-
-        // 2-second periodic tick (only updates when pane is visible)
-        let pane_weak = Rc::downgrade(&pane);
-        glib::timeout_add_seconds_local(2, move || {
-            if let Some(p) = pane_weak.upgrade() {
-                if p.container.is_visible() {
-                    p.update_clock(&time_lbl, &date_lbl);
-                    p.update_metrics();
-                    p.update_media();
-                }
-                glib::ControlFlow::Continue
-            } else {
-                glib::ControlFlow::Break
-            }
-        });
-
         pane
     }
 
@@ -220,13 +209,43 @@ impl WidgetsPane {
         &self.container
     }
 
-    fn update_clock(&self, time_lbl: &Label, date_lbl: &Label) {
+    /// Triggers its 2s /proc timer strictly on show (Option 1 Lifecycle)
+    pub fn on_show(self: &Rc<Self>) {
+        if self.timer_source.borrow().is_none() {
+            // Immediate update
+            self.update_clock();
+            self.update_metrics();
+            self.update_media();
+
+            let weak = Rc::downgrade(self);
+            let source_id = glib::timeout_add_seconds_local(2, move || {
+                if let Some(p) = weak.upgrade() {
+                    p.update_clock();
+                    p.update_metrics();
+                    p.update_media();
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+            *self.timer_source.borrow_mut() = Some(source_id);
+        }
+    }
+
+    /// Stops the 2s /proc timer completely when hidden or tab inactive
+    pub fn on_hide(&self) {
+        if let Some(source_id) = self.timer_source.borrow_mut().take() {
+            source_id.remove();
+        }
+    }
+
+    fn update_clock(&self) {
         if let Ok(now) = glib::DateTime::now_local() {
             if let Ok(time_str) = now.format("%H:%M:%S") {
-                time_lbl.set_label(&time_str);
+                self.time_lbl.set_label(&time_str);
             }
             if let Ok(date_str) = now.format("%A, %B %d, %Y") {
-                date_lbl.set_label(&date_str);
+                self.date_lbl.set_label(&date_str);
             }
         }
     }
@@ -247,10 +266,11 @@ impl WidgetsPane {
                         let total_delta = total.saturating_sub(prev_total);
                         let idle_delta = idle.saturating_sub(prev_idle);
                         if total_delta > 0 {
-                            let usage =
-                                (1.0 - (idle_delta as f64 / total_delta as f64)).clamp(0.0, 1.0);
-                            self.cpu_bar.set_fraction(usage);
-                            self.cpu_label.set_label(&format!("{:.0}%", usage * 100.0));
+                            let usage = (total_delta.saturating_sub(idle_delta)) as f64
+                                / total_delta as f64;
+                            let pct = (usage * 100.0).clamp(0.0, 100.0);
+                            self.cpu_bar.set_fraction(pct / 100.0);
+                            self.cpu_label.set_label(&format!("{:.0}%", pct));
                         }
                     }
                     *self.last_cpu.borrow_mut() = Some((total, idle));
@@ -267,63 +287,71 @@ impl WidgetsPane {
                     total_kb = line
                         .split_whitespace()
                         .nth(1)
-                        .and_then(|v| v.parse().ok())
+                        .and_then(|s| s.parse().ok())
                         .unwrap_or(0);
                 } else if line.starts_with("MemAvailable:") {
                     avail_kb = line
                         .split_whitespace()
                         .nth(1)
-                        .and_then(|v| v.parse().ok())
+                        .and_then(|s| s.parse().ok())
                         .unwrap_or(0);
                 }
             }
             if total_kb > 0 {
                 let used_kb = total_kb.saturating_sub(avail_kb);
-                let fraction = (used_kb as f64 / total_kb as f64).clamp(0.0, 1.0);
-                self.ram_bar.set_fraction(fraction);
-                let used_gb = used_kb as f64 / (1024.0 * 1024.0);
-                let total_gb = total_kb as f64 / (1024.0 * 1024.0);
-                self.ram_label
-                    .set_label(&format!("{:.1}/{:.0}G", used_gb, total_gb));
+                let pct = (used_kb as f64 / total_kb as f64) * 100.0;
+                self.ram_bar.set_fraction(pct / 100.0);
+                self.ram_label.set_label(&format!("{:.0}%", pct));
             }
         }
     }
 
     fn update_media(&self) {
-        let players = Self::list_mpris_players();
-        if let Some(player) = players.first() {
-            // Read title & artist via qdbus6
-            let title = Command::new("qdbus6")
-                .arg(player)
-                .arg("/org/mpris/MediaPlayer2")
-                .arg("org.freedesktop.DBus.Properties.Get")
-                .arg("org.mpris.MediaPlayer2.Player")
-                .arg("Metadata")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                .unwrap_or_default();
-
-            if !title.is_empty() {
-                self.media_title.set_label(&format!(
-                    "Player: {}",
-                    player.trim_start_matches("org.mpris.MediaPlayer2.")
-                ));
+        if let Ok(output) = Command::new("playerctl").arg("metadata").output() {
+            if output.status.success() {
+                let out = String::from_utf8_lossy(&output.stdout);
+                let mut title = String::new();
+                let mut artist = String::new();
+                for line in out.lines() {
+                    if line.contains("xesam:title") {
+                        title = line
+                            .split_whitespace()
+                            .skip(2)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                    } else if line.contains("xesam:artist") {
+                        artist = line
+                            .split_whitespace()
+                            .skip(2)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                    }
+                }
+                if !title.is_empty() {
+                    self.media_title.set_label(&title);
+                    self.media_artist.set_label(if artist.is_empty() {
+                        "Unknown Artist"
+                    } else {
+                        &artist
+                    });
+                    return;
+                }
             }
         }
+        self.media_title.set_label("No active player");
+        self.media_artist.set_label("Idle");
     }
 
     fn get_wpctl_volume() -> Result<f64, ()> {
-        let output = Command::new("wpctl")
+        let out = Command::new("wpctl")
             .arg("get-volume")
             .arg("@DEFAULT_AUDIO_SINK@")
             .output()
             .map_err(|_| ())?;
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            // Output format: "Volume: 0.54"
-            if let Some(part) = s.split_whitespace().nth(1) {
-                if let Ok(v) = part.parse::<f64>() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(v_str) = s.split_whitespace().nth(1) {
+                if let Ok(v) = v_str.parse::<f64>() {
                     return Ok(v);
                 }
             }
@@ -332,41 +360,23 @@ impl WidgetsPane {
     }
 
     fn is_wpctl_muted() -> Result<bool, ()> {
-        let output = Command::new("wpctl")
+        let out = Command::new("wpctl")
             .arg("get-volume")
             .arg("@DEFAULT_AUDIO_SINK@")
             .output()
             .map_err(|_| ())?;
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
             return Ok(s.contains("[MUTED]"));
         }
         Err(())
     }
 
-    fn list_mpris_players() -> Vec<String> {
-        let output = Command::new("qdbus6")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        output
-            .lines()
-            .filter(|l| l.starts_with("org.mpris.MediaPlayer2."))
-            .map(|l| l.to_string())
-            .collect()
-    }
-
     fn send_mpris_cmd(cmd: &str) -> Result<(), ()> {
-        let players = Self::list_mpris_players();
-        if let Some(player) = players.first() {
-            let _ = Command::new("qdbus6")
-                .arg(player)
-                .arg("/org/mpris/MediaPlayer2")
-                .arg(format!("org.mpris.MediaPlayer2.Player.{}", cmd))
-                .status();
-            Ok(())
-        } else {
-            Err(())
-        }
+        Command::new("playerctl")
+            .arg(cmd.to_lowercase())
+            .status()
+            .map(|_| ())
+            .map_err(|_| ())
     }
 }

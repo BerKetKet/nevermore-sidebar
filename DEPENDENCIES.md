@@ -1,67 +1,30 @@
-# 📦 Nevermore System Dependencies
+# Nevermore Dependencies
 
-This document records the exact versions of all system packages, libraries, and language toolchains evaluated and pinned for the Nevermore project on CachyOS / KDE Plasma 6 (Wayland) on an Intel integrated GPU.
+This document tracks all external crate and system dependencies for the Nevermore Wayland sidebar workspace.
 
----
+## System Dependencies (Arch / CachyOS Linux)
+- `gtk4` (>= 4.14)
+- `gtk4-layer-shell` (>= 0.8)
+- `vte4` (>= 0.76)
+- `tmux` (>= 3.3)
+- `playerctl` (for MPRIS media control)
+- `wireplumber` / `wpctl` (for PipeWire audio control)
+- `libnotify` / `notify-send` (desktop notifications)
+- `spectacle` / `grim` / `slurp` (screenshot validation)
 
-## 🛠️ Language Toolchain (Pinned)
+## Cargo Workspace Crate Dependencies (Exact Pinned Versions)
 
-| Tool | Version | Source | Status |
-| :--- | :--- | :--- | :--- |
-| **Rust Compiler (`rustc`)** | `1.98.0 (88d9e12ae 2026-08-18)` | `rustup` / `rust-toolchain.toml` | **Installed & Pinned** |
-| **Cargo Package Manager** | `1.98.0 (797e8a9bc 2026-08-05)` | `rustup` / `rust-toolchain.toml` | **Installed & Pinned** |
-| **Rust Edition** | `2021` | `Cargo.toml` | **Configured** |
-
----
-
-## 🖥️ System Packages & Compositor Environment (`pacman -Qi`)
-
-| Package Name | Installed Version | Repository | Role in Nevermore | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| `kwin` | `6.8.2-1.1` | cachyos-extra-v3 | Primary target Wayland compositor | **Installed** |
-| `plasma-workspace` | `6.8.2-1.1` | cachyos-extra-v3 | KDE Plasma 6 desktop environment | **Installed** |
-| `wayland` | `1.26.0-1.1` | cachyos-extra-v3 | Display server protocol & client libraries | **Installed** |
-| `gtk4` | `1:4.24.1-1.1` | cachyos-extra-v3 | Candidate GUI toolkit (Bake-Off Option A) | **Installed** |
-| `gtk4-layer-shell` | `1.3.0-1.1` | cachyos-extra-v3 | Wayland `wlr-layer-shell` integration for GTK4 | **Installed** |
-| `vte4` | `0.84.1-1.1` | cachyos-extra-v3 | GTK4 terminal emulator widget | **Installed** |
-| `tmux` | `3.8-1.1` | cachyos-extra-v3 | Durable terminal session daemon (`tmux -L nevermore`) | **Installed** |
-| `mpv` | `1:0.41.0-6.1` | cachyos-extra-v3 | Media playback engine backend | **Installed** |
-| `yt-dlp` | `2026.10.26-1` | cachyos-extra-v3 | Media streaming & audio extraction helper | **Installed** |
-| `cloudflare-warp-bin` | `2026.8.2115-1` | cachyos | VPN network toggle provider (`warp-cli`) | **Installed** |
-| `networkmanager` | `1.58.1-2` | cachyos-extra-v3 | Network connection & Wi-Fi management | **Installed** |
-| `intel-media-driver` | `26.3.5-1.1` | cachyos-extra-v3 | VAAPI hardware acceleration for Intel iGPU | **Installed** |
-| `mesa` | `3:26.2.5-1` | cachyos-extra-v3 | OpenGL / Vulkan graphics drivers (Intel Iris Plus 655) | **Installed** |
-
----
-
-## 📦 System Packages Status
-
-All 13 required system packages are **fully installed and verified**. No missing dependencies remain.
-
----
-
-## 🔒 Cargo Crate Dependency Pins (`Cargo.lock`)
-
-All Cargo dependencies use exact `=` version pins in `Cargo.toml`:
-
-| Crate | Exact Pin | Purpose |
-| :--- | :--- | :--- |
-| `nevermore-core` | `path = "crates/nevermore-core"` | Headless state machine, traits, types |
-| `serde` | `=1.0.229` | Serializable state and configuration |
-| `serde_json` | `=1.0.154` | JSON serialization for IPC and tasks |
-| `thiserror` | `=2.0.21` | Strongly typed domain errors |
-| `clap` | `=4.6.7` | Command-line interface argument parsing |
-| `gtk4` | `=0.11.5` | GTK4 Rust bindings |
-| `gtk4-layer-shell` | `=0.8.1` | Wayland Layer Shell bindings for GTK4 |
-| `vte4` | `=0.10.0` | VTE4 terminal widget bindings for GTK4 |
-| `glib` | `=0.22.10` | GLib bindings and main loop integration |
-| `gio` | `=0.22.10` | GIO bindings |
-| `async-channel` | `=2.5.0` | Zero-polling async event channel for GTK4 main loop |
-
----
-
-## 🎨 Asset Dependencies & Licenses
-
-| Asset | Location | License | Description |
-| :--- | :--- | :--- | :--- |
-| **Lucide SVG Icons** | `crates/nevermore-ui/resources/icons/` | MIT License | 9 custom monochrome vector icons for canonical navigation tabs |
+| Crate | Exact Version | Workspace / Crates Used | Purpose |
+|---|---|---|---|
+| `serde` | `=1.0.229` | Workspace, `nevermore-core`, `nevermore-cli`, `nevermore-ui` | Serialization / deserialization |
+| `serde_json` | `=1.0.154` | Workspace, `nevermore-core`, `nevermore-cli`, `nevermore-ui` | IPC JSON wire protocol |
+| `thiserror` | `=2.0.21` | Workspace, `nevermore-core` | Structured domain error handling |
+| `clap` | `=4.6.7` | Workspace, `nevermore-cli` | Command-line argument parsing |
+| `toml` | `=0.8.2` | Workspace, `nevermore-core` | Plugin manifest and theme parsing |
+| `libc` | `=0.2.191` | Workspace, `nevermore-ui` | Linux `prctl(PR_SET_PDEATHSIG)` child process death signals |
+| `gtk4` | `=0.11.5` | `nevermore-ui` | GTK4 Wayland GUI bindings |
+| `gtk4-layer-shell` | `=0.8.1` | `nevermore-ui` | Wayland `wlr-layer-shell` integration |
+| `vte4` | `=0.10.0` | `nevermore-ui` | Embedded virtual terminal emulator widget |
+| `glib` | `=0.22.10` | `nevermore-ui` | GLib main loop, timeouts, and channels |
+| `gio` | `=0.22.10` | `nevermore-ui` | GIO application framework |
+| `async-channel` | `=2.5.0` | `nevermore-ui` | Lockless asynchronous IPC and notification queues |

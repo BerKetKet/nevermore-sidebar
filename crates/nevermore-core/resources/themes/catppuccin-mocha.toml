@@ -1,0 +1,24 @@
+name = "catppuccin-mocha"
+bg_primary = "#1e1e2e"
+bg_secondary = "#181825"
+bg_tertiary = "#313244"
+border_color = "#45475a"
+text_primary = "#cdd6f4"
+text_secondary = "#a6adc8"
+accent_color = "#89b4fa"
+danger_color = "#f38ba8"
+success_color = "#a6e3a1"
+warning_color = "#f9e2af"
+ui_font = "Inter"
+mono_font = "Hack Nerd Font Mono"
+mono_font_size = 10
+border_radius_px = 8
+term_bg = "#1e1e2e"
+term_fg = "#cdd6f4"
+term_cursor = "#89b4fa"
+term_palette = [
+    "#45475a", "#f38ba8", "#a6e3a1", "#f9e2af",
+    "#89b4fa", "#f5c2e7", "#94e2d5", "#bac2de",
+    "#585b70", "#f38ba8", "#a6e3a1", "#f9e2af",
+    "#89b4fa", "#f5c2e7", "#94e2d5", "#a6adc8"
+]

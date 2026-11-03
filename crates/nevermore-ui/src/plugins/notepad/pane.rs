@@ -16,7 +16,7 @@ pub struct NotepadPane {
 }
 
 impl NotepadPane {
-    pub fn new() -> Rc<Self> {
+    pub fn new(file_path: PathBuf) -> Rc<Self> {
         let container = GtkBox::new(Orientation::Vertical, 6);
         container.set_margin_start(8);
         container.set_margin_end(8);
@@ -25,16 +25,24 @@ impl NotepadPane {
         container.set_hexpand(true);
         container.set_vexpand(true);
 
-        // Path resolution: $XDG_DATA_HOME/nevermore/notes.txt
-        let data_dir = env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = env::var_os("HOME").unwrap_or_default();
-                PathBuf::from(home).join(".local").join("share")
-            });
-        let nevermore_dir = data_dir.join("nevermore");
-        let _ = fs::create_dir_all(&nevermore_dir);
-        let file_path = nevermore_dir.join("notes.txt");
+        if let Some(parent) = file_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        // Migrate from legacy $XDG_DATA_HOME/nevermore/notes.txt if exists and target is empty
+        if !file_path.exists() {
+            let legacy_path = env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    let home = env::var_os("HOME").unwrap_or_default();
+                    PathBuf::from(home).join(".local").join("share")
+                })
+                .join("nevermore")
+                .join("notes.txt");
+            if legacy_path.exists() {
+                let _ = fs::copy(&legacy_path, &file_path);
+            }
+        }
 
         // Header Action Bar
         let header_bar = GtkBox::new(Orientation::Horizontal, 6);
@@ -99,24 +107,29 @@ impl NotepadPane {
 
         // Connect text buffer changed with atomic auto-save debounce (500ms)
         let pane_weak = Rc::downgrade(&pane);
-        buffer.connect_changed(move |b| {
+        buffer.connect_changed(move |buf| {
             if let Some(p) = pane_weak.upgrade() {
-                p.update_counts(b);
+                p.update_counts(buf);
 
-                // Cancel existing pending debounce timer
-                if let Some(source) = p.debounce_source.borrow_mut().take() {
-                    source.remove();
+                // Cancel existing pending debounce
+                if let Some(src) = p.debounce_source.borrow_mut().take() {
+                    src.remove();
                 }
 
-                // Schedule atomic save after 500ms
-                let p_save = p.clone();
-                let b_clone = b.clone();
-                let source_id = glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(500),
-                    move || {
-                        p_save.atomic_save(&b_clone);
-                    },
-                );
+                let text = {
+                    let start = buf.start_iter();
+                    let end = buf.end_iter();
+                    buf.text(&start, &end, false).to_string()
+                };
+
+                let p_timer = p.clone();
+                let source_id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                        p_timer.debounce_source.borrow_mut().take();
+                        p_timer.save_to_disk(&text);
+                        glib::ControlFlow::Break
+                    });
+
                 *p.debounce_source.borrow_mut() = Some(source_id);
             }
         });
@@ -129,21 +142,20 @@ impl NotepadPane {
     }
 
     fn update_counts(&self, buffer: &TextBuffer) {
-        let (start, end) = buffer.bounds();
+        let char_count = buffer.char_count();
+        let start = buffer.start_iter();
+        let end = buffer.end_iter();
         let text = buffer.text(&start, &end, false);
-        let char_count = text.chars().count();
         let word_count = text.split_whitespace().count();
+
         self.status_label
-            .set_label(&format!("{} words | {} chars", word_count, char_count));
+            .set_label(&format!("{} words  |  {} chars", word_count, char_count));
     }
 
-    fn atomic_save(&self, buffer: &TextBuffer) {
-        let (start, end) = buffer.bounds();
-        let text = buffer.text(&start, &end, false);
-        let tmp_path = self.file_path.with_extension("txt.tmp");
-
-        if fs::write(&tmp_path, text.as_bytes()).is_ok() {
-            let _ = fs::rename(&tmp_path, &self.file_path);
+    fn save_to_disk(&self, content: &str) {
+        let temp_path = self.file_path.with_extension("tmp");
+        if let Ok(()) = fs::write(&temp_path, content) {
+            let _ = fs::rename(&temp_path, &self.file_path);
         }
     }
 }

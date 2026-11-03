@@ -1,7 +1,9 @@
 use gtk4::gdk;
 use gtk4::pango;
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 use gtk4::{Box as GtkBox, Button, Label, Orientation, PolicyType, ScrolledWindow, Stack};
+use nevermore_core::theme::ThemePalette;
 use nevermore_core::traits::{SessionBackend, TaskBackend};
 use nevermore_core::{SystemdTaskBackend, TmuxBackend};
 use std::cell::RefCell;
@@ -26,17 +28,18 @@ pub struct TerminalPane {
     tmux: TmuxBackend,
     systemd: SystemdTaskBackend,
     self_weak: RefCell<Option<Weak<TerminalPane>>>,
+    current_theme: RefCell<ThemePalette>,
 }
 
 impl TerminalPane {
-    pub fn new() -> Rc<Self> {
+    pub fn new(tmux: TmuxBackend, systemd: SystemdTaskBackend, theme: &ThemePalette) -> Rc<Self> {
         let container = GtkBox::new(Orientation::Vertical, 0);
         container.set_hexpand(true);
         container.set_vexpand(true);
 
         // 1. Page Bar with ScrolledWindow to prevent width expansion
         let page_bar = GtkBox::new(Orientation::Horizontal, 4);
-        page_bar.add_css_class("page-bar");
+        page_bar.add_css_class("term-page-bar");
 
         let page_bar_scroll = ScrolledWindow::builder()
             .hscrollbar_policy(PolicyType::Automatic)
@@ -49,15 +52,15 @@ impl TerminalPane {
 
         let btn_new = Button::with_label("+");
         btn_new.set_tooltip_text(Some("New Terminal Page"));
-        btn_new.add_css_class("btn-new-page");
+        btn_new.add_css_class("btn-term-ctrl");
 
         let btn_bg = Button::with_label("⏏");
         btn_bg.set_tooltip_text(Some("Send to Background"));
-        btn_bg.add_css_class("btn-action-bg");
+        btn_bg.add_css_class("btn-term-ctrl");
 
         let btn_close = Button::with_label("✕");
         btn_close.set_tooltip_text(Some("Close Page"));
-        btn_close.add_css_class("btn-action-close");
+        btn_close.add_css_class("btn-term-ctrl");
 
         page_bar.append(&page_bar_scroll);
         page_bar.append(&btn_new);
@@ -101,11 +104,13 @@ impl TerminalPane {
             bg_list_box,
             pages: Rc::new(RefCell::new(Vec::new())),
             active_page_id: Rc::new(RefCell::new(String::new())),
-            tmux: TmuxBackend::new("nevermore"),
-            systemd: SystemdTaskBackend::new("nevermore-task"),
+            tmux,
+            systemd,
             self_weak: RefCell::new(None),
+            current_theme: RefCell::new(theme.clone()),
         });
-        pane.self_weak.replace(Some(Rc::downgrade(&pane)));
+
+        *pane.self_weak.borrow_mut() = Some(Rc::downgrade(&pane));
 
         // Connect action buttons
         let pane_clone = pane.clone();
@@ -144,6 +149,28 @@ impl TerminalPane {
         &self.container
     }
 
+    pub fn apply_theme(&self, theme: &ThemePalette) {
+        *self.current_theme.borrow_mut() = theme.clone();
+
+        let fg = gdk::RGBA::parse(&theme.term_fg).unwrap_or(gdk::RGBA::new(0.96, 0.96, 0.96, 1.0));
+        let bg =
+            gdk::RGBA::parse(&theme.term_bg).unwrap_or(gdk::RGBA::new(0.094, 0.094, 0.106, 1.0));
+        let palette: Vec<gdk::RGBA> = theme
+            .term_palette
+            .iter()
+            .filter_map(|c| gdk::RGBA::parse(c).ok())
+            .collect();
+
+        let font_desc = format!("{} {}", theme.mono_font, theme.mono_font_size);
+        let pango_font = pango::FontDescription::from_string(&font_desc);
+
+        for p in self.pages.borrow().iter() {
+            let pal_refs: Vec<&gdk::RGBA> = palette.iter().collect();
+            p.terminal.set_colors(Some(&fg), Some(&bg), &pal_refs);
+            p.terminal.set_font(Some(&pango_font));
+        }
+    }
+
     /// Spawns a new terminal page attached to tmux -L nevermore with -f <conf_path>.
     pub fn create_new_page(&self, custom_name: Option<&str>) {
         let count = self.pages.borrow().len() + 1;
@@ -160,15 +187,21 @@ impl TerminalPane {
         terminal.set_size_request(200, 200);
         terminal.set_scrollback_lines(50000);
 
-        // Configure font: Hack Nerd Font Mono 10
-        terminal.set_font(Some(&pango::FontDescription::from_string(
-            "Hack Nerd Font Mono 10",
-        )));
+        // Apply theme font and palette
+        let theme = self.current_theme.borrow();
+        let font_desc = format!("{} {}", theme.mono_font, theme.mono_font_size);
+        terminal.set_font(Some(&pango::FontDescription::from_string(&font_desc)));
 
-        // Solid dark theme colors
-        let fg = gdk::RGBA::new(0.96, 0.96, 0.96, 1.0);
-        let bg = gdk::RGBA::new(0.094, 0.094, 0.106, 1.0); // #18181b
-        terminal.set_colors(Some(&fg), Some(&bg), &[]);
+        let fg = gdk::RGBA::parse(&theme.term_fg).unwrap_or(gdk::RGBA::new(0.96, 0.96, 0.96, 1.0));
+        let bg =
+            gdk::RGBA::parse(&theme.term_bg).unwrap_or(gdk::RGBA::new(0.094, 0.094, 0.106, 1.0));
+        let palette: Vec<gdk::RGBA> = theme
+            .term_palette
+            .iter()
+            .filter_map(|c| gdk::RGBA::parse(c).ok())
+            .collect();
+        let pal_refs: Vec<&gdk::RGBA> = palette.iter().collect();
+        terminal.set_colors(Some(&fg), Some(&bg), &pal_refs);
 
         // Spawn tmux session with -f <conf_path>
         let conf_str = self.tmux.conf_path().to_string_lossy().to_string();
@@ -286,7 +319,7 @@ impl TerminalPane {
 
         for p in pages.iter() {
             let btn = Button::with_label(&p.title);
-            btn.add_css_class("page-tab-btn");
+            btn.add_css_class("term-page-btn");
             if p.id == active_id {
                 btn.add_css_class("active");
             }
@@ -300,11 +333,11 @@ impl TerminalPane {
                 *act_ref.borrow_mut() = pid.clone();
                 stack_ref.set_visible_child_name(&pid);
 
-                // Update active CSS
-                let mut cur = bar_box.first_child();
-                while let Some(w) = cur {
+                // Update tab buttons active class
+                let mut sib = bar_box.first_child();
+                while let Some(w) = sib {
                     w.remove_css_class("active");
-                    cur = w.next_sibling();
+                    sib = w.next_sibling();
                 }
                 b.add_css_class("active");
             });
@@ -318,106 +351,81 @@ impl TerminalPane {
             self.bg_list_box.remove(&child);
         }
 
-        let active_sessions: Vec<String> = self
-            .pages
-            .borrow()
-            .iter()
-            .map(|p| p.session_name.clone())
-            .collect();
-
-        // 1. Check tmux sessions
+        // List background tmux sessions
         if let Ok(sessions) = self.tmux.list_sessions() {
             for s in sessions {
-                if !active_sessions.contains(&s.name) {
-                    let card = GtkBox::new(Orientation::Horizontal, 6);
-                    card.add_css_class("session-card");
+                if self.tmux.is_session_backgrounded(&s.name) {
+                    let row = GtkBox::new(Orientation::Horizontal, 6);
+                    row.add_css_class("bg-session-row");
 
-                    let info_box = GtkBox::new(Orientation::Vertical, 2);
-                    info_box.set_hexpand(true);
+                    let lbl = Label::new(Some(&format!("tmux: {}", s.name)));
+                    lbl.add_css_class("bg-session-label");
+                    lbl.set_hexpand(true);
+                    lbl.set_xalign(0.0);
+                    row.append(&lbl);
 
-                    let title = Label::new(Some(&format!("tmux: {}", s.name)));
-                    title.add_css_class("session-title");
-                    title.set_xalign(0.0);
-                    title.set_ellipsize(pango::EllipsizeMode::End);
+                    let btn_attach = Button::with_label("Attach");
+                    btn_attach.add_css_class("btn-bg-attach");
 
-                    let sub = Label::new(Some(&format!(
-                        "clients: {} | windows: {}",
-                        s.attached_clients, s.windows_count
-                    )));
-                    sub.add_css_class("session-sub");
-                    sub.set_xalign(0.0);
-                    sub.set_ellipsize(pango::EllipsizeMode::End);
-
-                    info_box.append(&title);
-                    info_box.append(&sub);
-
-                    let btn_reattach = Button::with_label("Reattach");
-                    btn_reattach.add_css_class("btn-reattach");
-
-                    let sess_name = s.name.clone();
-                    let pane_weak = self.self_weak.borrow().clone();
-
-                    btn_reattach.connect_clicked(move |_| {
-                        if let Some(pw) = pane_weak.as_ref() {
-                            if let Some(pane) = pw.upgrade() {
-                                pane.reattach_session(&sess_name);
+                    let s_name = s.name.clone();
+                    let weak = self.self_weak.borrow().clone();
+                    btn_attach.connect_clicked(move |_| {
+                        if let Some(w) = &weak {
+                            if let Some(pane_rc) = w.upgrade() {
+                                pane_rc.reattach_session(&s_name);
                             }
                         }
                     });
+                    row.append(&btn_attach);
 
                     let btn_kill = Button::with_label("✕");
-                    btn_kill.add_css_class("btn-kill-session");
-                    let tmux_kill = self.tmux.clone();
-                    let card_box = card.clone();
-                    let list_box = self.bg_list_box.clone();
-                    let s_id = s.id.clone();
+                    btn_kill.add_css_class("btn-bg-kill");
+                    let tmux_ref = self.tmux.clone();
+                    let s_name_kill = s.name.clone();
+                    let weak_kill = self.self_weak.borrow().clone();
                     btn_kill.connect_clicked(move |_| {
-                        let _ = tmux_kill.kill_session(&s_id);
-                        list_box.remove(&card_box);
+                        let _ = tmux_ref.kill_session(&s_name_kill);
+                        if let Some(w) = &weak_kill {
+                            if let Some(pane_rc) = w.upgrade() {
+                                pane_rc.refresh_background_list();
+                            }
+                        }
                     });
+                    row.append(&btn_kill);
 
-                    card.append(&info_box);
-                    card.append(&btn_reattach);
-                    card.append(&btn_kill);
-                    self.bg_list_box.append(&card);
+                    self.bg_list_box.append(&row);
                 }
             }
         }
 
-        // 2. Check transient systemd background tasks
+        // List background transient systemd tasks
         if let Ok(tasks) = self.systemd.list_tasks() {
             for t in tasks {
-                let card = GtkBox::new(Orientation::Horizontal, 6);
-                card.add_css_class("session-card");
+                let row = GtkBox::new(Orientation::Horizontal, 6);
+                row.add_css_class("bg-session-row");
 
-                let info_box = GtkBox::new(Orientation::Vertical, 2);
-                info_box.set_hexpand(true);
+                let lbl = Label::new(Some(&format!("task: {} ({:?})", t.command, t.state)));
+                lbl.add_css_class("bg-session-label");
+                lbl.set_hexpand(true);
+                lbl.set_xalign(0.0);
+                row.append(&lbl);
 
-                let title = Label::new(Some(&format!("task: {}", t.unit)));
-                title.add_css_class("session-title");
-                title.set_xalign(0.0);
-
-                let sub = Label::new(Some(&format!("cmd: {}", t.command)));
-                sub.add_css_class("session-sub");
-                sub.set_xalign(0.0);
-
-                info_box.append(&title);
-                info_box.append(&sub);
-
-                let btn_kill = Button::with_label("✕");
-                btn_kill.add_css_class("btn-kill-session");
+                let btn_kill = Button::with_label("Stop");
+                btn_kill.add_css_class("btn-bg-kill");
                 let sys_kill = self.systemd.clone();
-                let card_box = card.clone();
-                let list_box = self.bg_list_box.clone();
-                let unit = t.unit.clone();
+                let unit_kill = t.unit.clone();
+                let weak_kill = self.self_weak.borrow().clone();
                 btn_kill.connect_clicked(move |_| {
-                    let _ = sys_kill.stop_task(&unit);
-                    list_box.remove(&card_box);
+                    let _ = sys_kill.stop_task(&unit_kill);
+                    if let Some(w) = &weak_kill {
+                        if let Some(pane_rc) = w.upgrade() {
+                            pane_rc.refresh_background_list();
+                        }
+                    }
                 });
+                row.append(&btn_kill);
 
-                card.append(&info_box);
-                card.append(&btn_kill);
-                self.bg_list_box.append(&card);
+                self.bg_list_box.append(&row);
             }
         }
     }

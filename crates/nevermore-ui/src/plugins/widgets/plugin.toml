@@ -1,0 +1,5 @@
+id = "widgets"
+title = "System Widgets"
+icon = "widgets.svg"
+order = 2
+description = "Live system resources, clock, audio, and media controls"

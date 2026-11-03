@@ -4,6 +4,7 @@ use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::traits::WindowRaiser;
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::thread;
@@ -105,7 +106,7 @@ impl NotificationsPane {
             pane_clear.clear_all();
         });
 
-        // Spawn D-Bus Listen-Only Monitor thread (Spike 07)
+        // Spawn D-Bus Listen-Only Monitor thread with kernel PR_SET_PDEATHSIG (Task 2)
         let (tx, rx) = async_channel::unbounded::<NotificationItem>();
         Self::spawn_dbus_monitor(tx);
 
@@ -200,7 +201,7 @@ impl NotificationsPane {
     fn toggle_dnd(&self, btn: &Button) {
         let mut cookie_slot = self.dnd_cookie.borrow_mut();
         if let Some(cookie) = *cookie_slot {
-            // UnInhibit
+            // Uninhibit via busctl
             let _ = Command::new("busctl")
                 .arg("--user")
                 .arg("call")
@@ -211,11 +212,12 @@ impl NotificationsPane {
                 .arg("u")
                 .arg(cookie.to_string())
                 .status();
+
             *cookie_slot = None;
             btn.set_label("🔔 DND OFF");
             btn.remove_css_class("dnd-active");
         } else {
-            // Inhibit
+            // Inhibit via busctl
             let out = Command::new("busctl")
                 .arg("--user")
                 .arg("call")
@@ -252,6 +254,15 @@ impl NotificationsPane {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
 
+            // Task 2: Kernel orphan-prevention guard under KillMode=process
+            // When nevermore-ui exits or receives SIGKILL, the Linux kernel sends SIGKILL to dbus-monitor
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    Ok(())
+                });
+            }
+
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(_) => return,
@@ -265,7 +276,6 @@ impl NotificationsPane {
                 while let Some(Ok(line)) = lines.next() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("method call") {
-                        // Deliver previously collected notification if complete
                         if current_strings.len() >= 4 {
                             let app_name = current_strings[0].clone();
                             let summary = current_strings[2].clone();

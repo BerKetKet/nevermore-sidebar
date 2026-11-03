@@ -1,0 +1,5 @@
+id = "terminal"
+title = "Embedded Terminal"
+icon = "terminal.svg"
+order = 1
+description = "Embedded multi-page terminal backed by tmux sessions"

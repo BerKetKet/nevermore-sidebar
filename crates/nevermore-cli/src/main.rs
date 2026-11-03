@@ -46,6 +46,22 @@ enum Commands {
         /// Desktop entry name (e.g. org.kde.konsole)
         desktop_entry: String,
     },
+    /// Manage visual themes (list or set active theme)
+    Theme {
+        #[command(subcommand)]
+        action: ThemeCommands,
+    },
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum ThemeCommands {
+    /// List all available themes and indicate the active theme
+    List,
+    /// Set and apply a theme dynamically
+    Set {
+        /// Name of the theme to set
+        name: String,
+    },
 }
 
 fn main() {
@@ -65,6 +81,10 @@ fn main() {
         },
         Commands::Raise { desktop_entry } => IpcRequest::RaiseApp {
             desktop_entry: desktop_entry.clone(),
+        },
+        Commands::Theme { action } => match action {
+            ThemeCommands::List => IpcRequest::ListThemes,
+            ThemeCommands::Set { name } => IpcRequest::SetTheme { name: name.clone() },
         },
     };
 
@@ -111,6 +131,17 @@ fn main() {
         Ok(IpcResponse::Logs(logs)) => {
             print!("{}", logs);
         }
+        Ok(IpcResponse::Themes { active, available }) => {
+            println!("Active Theme: {}", active);
+            println!("\nAvailable Themes:");
+            for t in available {
+                if t == active {
+                    println!("  * {} (active)", t);
+                } else {
+                    println!("    {}", t);
+                }
+            }
+        }
         Ok(IpcResponse::Ok) => {
             println!("Operation completed successfully.");
         }
@@ -151,6 +182,24 @@ mod tests {
             Commands::Run {
                 command: "make build".to_string(),
                 dir: Some("/tmp".to_string()),
+            }
+        );
+
+        let cli = Cli::try_parse_from(["nevermore", "theme", "list"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Commands::Theme {
+                action: ThemeCommands::List
+            }
+        );
+
+        let cli = Cli::try_parse_from(["nevermore", "theme", "set", "catppuccin-mocha"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Commands::Theme {
+                action: ThemeCommands::Set {
+                    name: "catppuccin-mocha".to_string()
+                }
             }
         );
     }

@@ -1,14 +1,7 @@
 mod ipc_server;
 mod nav_rail;
-mod notepad_pane;
-mod notifications_pane;
-mod terminal_pane;
-mod widgets_pane;
-
-use notepad_pane::NotepadPane;
-use notifications_pane::NotificationsPane;
-use terminal_pane::TerminalPane;
-use widgets_pane::WidgetsPane;
+mod plugin_api;
+mod plugins;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
@@ -23,9 +16,14 @@ use nav_rail::NavRail;
 use nevermore_core::ipc::IpcResponse;
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::state::{SidebarEvent, SidebarState, SidebarStateMachine};
+use nevermore_core::theme::{
+    custom_css_path, get_active_theme_name, install_bundled_themes, list_available_themes,
+    load_theme, set_active_theme_name,
+};
 use nevermore_core::tmux::TmuxBackend;
 use nevermore_core::traits::{SessionBackend, TaskBackend, WindowRaiser};
 use nevermore_core::SystemdTaskBackend;
+use plugins::{create_default_registry, PluginRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -63,56 +61,100 @@ fn main() {
         // Keep the application running resident in the background indefinitely
         std::mem::forget(app.hold());
 
-        // 1. Load CSS
-        let provider = CssProvider::new();
-        provider.load_from_string(include_str!("style.css"));
+        // 1. Initialize Semantic Theme Engine & Load Dynamic GTK4 CSS
+        let _ = install_bundled_themes();
+        let active_theme_name = get_active_theme_name();
+        let theme_palette = load_theme(&active_theme_name).unwrap_or_default();
+        let theme_cell = Rc::new(RefCell::new(theme_palette));
+
+        let css_provider = CssProvider::new();
+        css_provider.load_from_string(&theme_cell.borrow().to_gtk_css());
         if let Some(display) = gdk::Display::default() {
             gtk4::style_context_add_provider_for_display(
                 &display,
-                &provider,
+                &css_provider,
                 gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
+
+            // Optional user override stylesheet at $XDG_CONFIG_HOME/nevermore/custom.css
+            let custom_css = custom_css_path();
+            if custom_css.exists() {
+                if let Ok(custom_str) = std::fs::read_to_string(&custom_css) {
+                    let user_provider = CssProvider::new();
+                    user_provider.load_from_string(&custom_str);
+                    gtk4::style_context_add_provider_for_display(
+                        &display,
+                        &user_provider,
+                        gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                    );
+                }
+            }
         }
 
-        // 2A. Build 2px Hot-Edge Layer-Shell Window (active only when Hidden)
+        // TASK 1: Query exact physical monitor height (default 1080)
+        let monitor_height = gdk::Display::default()
+            .and_then(|disp| {
+                let monitors = disp.monitors();
+                if monitors.n_items() > 0 {
+                    monitors
+                        .item(0)
+                        .and_downcast::<gdk::Monitor>()
+                        .map(|m| m.geometry().height())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(1080);
+
+        // 2A. TASK 1: Build 2px Hot-Edge Layer-Shell Window with exclusive_zone = -1
         let hot_edge_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Hot Edge")
-            .default_height(1080)
+            .default_height(monitor_height)
+            .default_width(HOT_EDGE_WIDTH)
             .build();
 
         hot_edge_window.init_layer_shell();
         hot_edge_window.set_layer(Layer::Top);
-        hot_edge_window.set_exclusive_zone(0);
+        hot_edge_window.set_exclusive_zone(-1); // -1 extends across entire physical screen height
         hot_edge_window.set_anchor(Edge::Right, true);
         hot_edge_window.set_anchor(Edge::Top, true);
         hot_edge_window.set_anchor(Edge::Bottom, true);
+        hot_edge_window.set_margin(Edge::Top, 0);
+        hot_edge_window.set_margin(Edge::Bottom, 0);
         hot_edge_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
-        hot_edge_window.set_size_request(HOT_EDGE_WIDTH, -1);
+        hot_edge_window.set_size_request(HOT_EDGE_WIDTH, monitor_height);
+        hot_edge_window.set_default_size(HOT_EDGE_WIDTH, monitor_height);
 
+        // Child Box with rgba(0,0,0,0.01) background ensures full 2x1080 Wayland input region
         let hot_edge_box = GtkBox::new(Orientation::Vertical, 0);
         hot_edge_box.add_css_class("hot-edge-strip");
-        hot_edge_box.set_size_request(HOT_EDGE_WIDTH, -1);
+        hot_edge_box.set_vexpand(true);
+        hot_edge_box.set_hexpand(true);
+        hot_edge_box.set_size_request(HOT_EDGE_WIDTH, monitor_height);
         hot_edge_window.set_child(Some(&hot_edge_box));
 
-        // 2B. Build 400px Main Sidebar Panel Window
+        // 2B. TASK 1: Build 400px Main Sidebar Panel Window with exclusive_zone = -1
         let panel_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Wayland Sidebar")
-            .default_height(1080)
+            .default_height(monitor_height)
+            .default_width(PANEL_WIDTH)
             .build();
 
         panel_window.init_layer_shell();
         panel_window.set_layer(Layer::Top);
-        panel_window.set_exclusive_zone(0);
+        panel_window.set_exclusive_zone(-1); // -1 extends across entire physical screen height
         panel_window.set_anchor(Edge::Right, true);
         panel_window.set_anchor(Edge::Top, true);
         panel_window.set_anchor(Edge::Bottom, true);
+        panel_window.set_margin(Edge::Top, 0);
+        panel_window.set_margin(Edge::Bottom, 0);
         panel_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
 
-        // Lock window width strictly to 400px
-        panel_window.set_size_request(PANEL_WIDTH, -1);
-        panel_window.set_default_size(PANEL_WIDTH, -1);
+        // Lock window width strictly to 400px, full monitor height
+        panel_window.set_size_request(PANEL_WIDTH, monitor_height);
+        panel_window.set_default_size(PANEL_WIDTH, monitor_height);
         panel_window.set_resizable(false);
         panel_window.add_css_class("sidebar-panel");
 
@@ -122,7 +164,15 @@ fn main() {
         let systemd = SystemdTaskBackend::new("nevermore-task");
         let kwin = KWinAdapter::new();
 
-        // 4. Construct Layout locked to 400px (60px rail + 340px content)
+        // 4. TASK 3: Modular Plugin Architecture Registry
+        let registry = Rc::new(RefCell::new(create_default_registry(
+            theme_cell.clone(),
+            tmux.clone(),
+            systemd.clone(),
+            kwin.clone(),
+        )));
+
+        // 5. Construct Layout locked to 400px (60px rail + 340px content)
         let main_box = GtkBox::new(Orientation::Horizontal, 0);
         main_box.set_size_request(PANEL_WIDTH, -1);
         main_box.set_hexpand(false);
@@ -132,11 +182,16 @@ fn main() {
         content_stack.set_hexpand(true);
         content_stack.set_vexpand(true);
 
+        registry.borrow().attach_to_stack(&content_stack);
+
         let c_stack = content_stack.clone();
         let sm_for_nav = state_machine.clone();
-        let nav_rail = NavRail::new(move |tab_name| {
+        let reg_for_nav = registry.clone();
+        let nav_rail = NavRail::new(&registry.borrow().manifests(), move |tab_name| {
+            let prev_tab = sm_for_nav.lock().unwrap().active_tab().to_string();
             let _ = sm_for_nav.lock().unwrap().set_active_tab(tab_name);
             c_stack.set_visible_child_name(tab_name);
+            reg_for_nav.borrow_mut().on_tab_changed(&prev_tab, tab_name);
         });
         nav_rail.widget().set_size_request(NAV_RAIL_WIDTH, -1);
         nav_rail.widget().set_hexpand(false);
@@ -147,7 +202,6 @@ fn main() {
         content_area.set_hexpand(false);
         content_area.set_vexpand(true);
 
-        // Header
         let header = GtkBox::new(Orientation::Horizontal, 8);
         header.add_css_class("sidebar-header");
 
@@ -178,24 +232,24 @@ fn main() {
         let nav_for_header = nav_rail.clone();
         let c_stack_for_header = content_stack.clone();
         let sm_for_header = state_machine.clone();
+        let reg_for_header = registry.clone();
         header_scroll_ctrl.connect_scroll(move |_, dx, _| {
             if dx.abs() > 0.5 {
                 let cur = sm_for_header.lock().unwrap().active_tab().to_string();
-                let current_idx = nav_rail::TABS
-                    .iter()
-                    .position(|(id, _, _)| *id == cur)
-                    .unwrap_or(0);
+                let tabs = nav_for_header.tabs();
+                let current_idx = tabs.iter().position(|id| *id == cur).unwrap_or(0);
                 let next_idx = if dx > 0.0 {
-                    (current_idx + 1) % nav_rail::TABS.len()
+                    (current_idx + 1) % tabs.len()
                 } else if current_idx == 0 {
-                    nav_rail::TABS.len() - 1
+                    tabs.len() - 1
                 } else {
                     current_idx - 1
                 };
-                let next_tab = nav_rail::TABS[next_idx].0;
+                let next_tab = &tabs[next_idx];
                 let _ = sm_for_header.lock().unwrap().set_active_tab(next_tab);
                 nav_for_header.set_active_tab(next_tab);
                 c_stack_for_header.set_visible_child_name(next_tab);
+                reg_for_header.borrow_mut().on_tab_changed(&cur, next_tab);
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -205,41 +259,6 @@ fn main() {
 
         content_area.append(&header);
         content_area.append(&content_stack);
-
-        // 5. Add Panes to Content Stack
-        let terminal_pane = TerminalPane::new();
-        content_stack.add_named(terminal_pane.widget(), Some("terminal"));
-
-        let widgets_pane = WidgetsPane::new();
-        content_stack.add_named(widgets_pane.widget(), Some("widgets"));
-
-        let notif_pane = NotificationsPane::new(kwin.clone());
-        content_stack.add_named(notif_pane.widget(), Some("notifications"));
-
-        let notepad_pane = NotepadPane::new();
-        content_stack.add_named(notepad_pane.widget(), Some("notepad"));
-
-        // Placeholder pages for remaining 5 future tabs
-        let active_tabs = ["terminal", "widgets", "notifications", "notepad"];
-        for (tab_id, _, tab_label) in nav_rail::TABS {
-            if !active_tabs.contains(tab_id) {
-                let tab_box = GtkBox::new(Orientation::Vertical, 12);
-                tab_box.set_hexpand(true);
-                tab_box.set_vexpand(true);
-                tab_box.set_valign(gtk4::Align::Center);
-                tab_box.set_halign(gtk4::Align::Center);
-
-                let text = if *tab_id == "email" {
-                    "NEVERMORE // EMAIL\nEmail Feasibility — Phase 11 Spike".to_string()
-                } else {
-                    format!("NEVERMORE // {}\n(Phase 8-10 Tab)", tab_label)
-                };
-                let placeholder = Label::new(Some(&text));
-                placeholder.add_css_class("header-title");
-                tab_box.append(&placeholder);
-                content_stack.add_named(&tab_box, Some(tab_id));
-            }
-        }
 
         main_box.append(nav_rail.widget());
         main_box.append(&content_area);
@@ -256,6 +275,8 @@ fn main() {
             content_stack: Stack,
             title_lbl: Label,
             leave_source: RefCell<Option<glib::SourceId>>,
+            registry: Rc<RefCell<PluginRegistry>>,
+            last_was_visible: RefCell<bool>,
         }
 
         let ctx = Rc::new(UiContext {
@@ -268,6 +289,8 @@ fn main() {
             content_stack: content_stack.clone(),
             title_lbl: title_lbl.clone(),
             leave_source: RefCell::new(None),
+            registry: registry.clone(),
+            last_was_visible: RefCell::new(false),
         });
 
         // Helper to sync UI to current State Machine state
@@ -283,6 +306,17 @@ fn main() {
                     .set_label(&format!("NEVERMORE // {}", active_tab.to_uppercase()));
                 ctx.content_stack.set_visible_child_name(&active_tab);
                 ctx.nav_rail.set_active_tab(&active_tab);
+
+                let is_visible = state.is_visible();
+                let mut last_vis = ctx.last_was_visible.borrow_mut();
+
+                if is_visible && !*last_vis {
+                    ctx.registry.borrow_mut().on_show(&active_tab);
+                    *last_vis = true;
+                } else if !is_visible && *last_vis {
+                    ctx.registry.borrow_mut().on_hide(&active_tab);
+                    *last_vis = false;
+                }
 
                 match state {
                     SidebarState::Hidden => {
@@ -365,6 +399,19 @@ fn main() {
         });
         hot_edge_window.add_controller(edge_motion);
 
+        let edge_box_motion = EventControllerMotion::new();
+        let apply_edge_box = apply_state.clone();
+        let ctx_edge_box = ctx.clone();
+        edge_box_motion.connect_enter(move |_, _, _| {
+            ctx_edge_box
+                .state_machine
+                .lock()
+                .unwrap()
+                .transition(SidebarEvent::PointerEnterEdge);
+            apply_edge_box();
+        });
+        hot_edge_box.add_controller(edge_box_motion);
+
         // Click inside Panel Window (Peek -> Engaged)
         let click_inside = GestureClick::new();
         let apply_click = apply_state.clone();
@@ -440,6 +487,9 @@ fn main() {
         let tmux_ipc = tmux.clone();
         let systemd_ipc = systemd.clone();
         let kwin_ipc = kwin.clone();
+        let theme_ipc = theme_cell.clone();
+        let css_prov_ipc = css_provider.clone();
+        let reg_ipc = registry.clone();
 
         glib::spawn_future_local(async move {
             while let Ok(cmd) = ipc_rx.recv().await {
@@ -590,6 +640,22 @@ fn main() {
                             Err(e) => IpcResponse::Error(e.to_string()),
                         }
                     }
+                    nevermore_core::ipc::IpcRequest::ListThemes => {
+                        let active = get_active_theme_name();
+                        let available = list_available_themes();
+                        IpcResponse::Themes { active, available }
+                    }
+                    nevermore_core::ipc::IpcRequest::SetTheme { name } => match load_theme(&name) {
+                        Ok(new_palette) => {
+                            *theme_ipc.borrow_mut() = new_palette.clone();
+                            let _ = set_active_theme_name(&name);
+                            css_prov_ipc.load_from_string(&new_palette.to_gtk_css());
+                            reg_ipc.borrow_mut().on_theme_changed(&new_palette);
+                            println!("[THEME] Switched active theme live to '{}'", name);
+                            IpcResponse::Ok
+                        }
+                        Err(e) => IpcResponse::Error(e),
+                    },
                 };
                 let _ = cmd.responder.send(response);
             }
@@ -605,8 +671,8 @@ fn main() {
         }
 
         // Present initial UI in Hidden mode
+        apply_state();
         hot_edge_window.present();
-        panel_window.set_visible(false);
 
         println!(
             "[NEVERMORE] UI initialized. Initial RSS: {:.2} MB",

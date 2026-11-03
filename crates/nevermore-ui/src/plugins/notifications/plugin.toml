@@ -1,0 +1,5 @@
+id = "notifications"
+title = "Notifications Feed"
+icon = "notifications.svg"
+order = 3
+description = "Real-time FreeDesktop notification feed with DND support"

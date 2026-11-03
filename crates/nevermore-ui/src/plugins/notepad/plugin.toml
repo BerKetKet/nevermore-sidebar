@@ -1,0 +1,5 @@
+id = "notepad"
+title = "Scratchpad"
+icon = "notepad.svg"
+order = 4
+description = "Quick scratchpad with auto-save to disk"

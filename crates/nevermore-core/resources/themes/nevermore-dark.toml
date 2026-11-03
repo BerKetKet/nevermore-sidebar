@@ -1,0 +1,24 @@
+name = "nevermore-dark"
+bg_primary = "#18181b"
+bg_secondary = "#202024"
+bg_tertiary = "#27272a"
+border_color = "#2e2e32"
+text_primary = "#f4f4f5"
+text_secondary = "#a1a1aa"
+accent_color = "#0a84ff"
+danger_color = "#ef4444"
+success_color = "#22c55e"
+warning_color = "#f59e0b"
+ui_font = "Inter"
+mono_font = "Hack Nerd Font Mono"
+mono_font_size = 10
+border_radius_px = 8
+term_bg = "#18181b"
+term_fg = "#f4f4f5"
+term_cursor = "#0a84ff"
+term_palette = [
+    "#18181b", "#ef4444", "#22c55e", "#f59e0b",
+    "#0a84ff", "#a855f7", "#06b6d4", "#f4f4f5",
+    "#3f3f46", "#f87171", "#4ade80", "#fbbf24",
+    "#60a5fa", "#c084fc", "#22d3ee", "#ffffff"
+]
