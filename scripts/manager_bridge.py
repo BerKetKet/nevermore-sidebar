@@ -22,6 +22,10 @@ SOCKET_PATH = "/tmp/nevermore_bridge.sock"
 PORT_FILE = "/home/bgg/.config/google-chrome/DevToolsActivePort"
 REPLY_FILE = "/tmp/manager_latest_reply.md"
 TARGET_URL_SUBSTRING = "gemini.google.com/app/71ae2007ae72440f"
+SPOOL_DIR = "/home/bgg/projects/nevermore-sidebar/.bridge"
+OUTBOX = os.path.join(SPOOL_DIR, "outbox.md")
+INBOX = os.path.join(SPOOL_DIR, "inbox.md")
+STATUS_FILE = os.path.join(SPOOL_DIR, "status.json")
 
 
 class CDPConnection:
@@ -31,6 +35,7 @@ class CDPConnection:
         self.msg_id = 0
         self.session_id = None
         self.lock = threading.Lock()
+        self.send_lock = threading.Lock()
         self.connect()
 
     def connect(self):
@@ -222,6 +227,10 @@ class CDPConnection:
         return self.evaluate(js)
 
     def send_gemini_message(self, text):
+        with self.send_lock:
+            return self._send_gemini_message_impl(text)
+
+    def _send_gemini_message_impl(self, text):
         js_count = "document.querySelectorAll('message-content, .model-response-text').length"
         initial_count = self.evaluate(js_count) or 0
 
@@ -318,6 +327,44 @@ class CDPConnection:
         return {"status": "OK", "text": latest_text}
 
 
+def file_spool_loop(cdp):
+    os.makedirs(SPOOL_DIR, exist_ok=True)
+    print(f"[Bridge Spool] Watching spool directory: {SPOOL_DIR}", flush=True)
+    while True:
+        try:
+            # Update status.json periodically
+            st = cdp.get_status()
+            with open(STATUS_FILE + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(st, f, indent=2)
+            os.replace(STATUS_FILE + ".tmp", STATUS_FILE)
+
+            if os.path.exists(OUTBOX) and os.path.getsize(OUTBOX) > 0:
+                with open(OUTBOX, "r", encoding="utf-8") as f:
+                    msg = f.read().strip()
+                if msg:
+                    print(f"[Bridge Spool] Found outbox.md ({len(msg)} bytes). Transmitting to Manager AI...", flush=True)
+                    res = cdp.send_gemini_message(msg)
+                    if res.get("status") == "OK":
+                        reply_text = res.get("text", "")
+                        with open(INBOX + ".tmp", "w", encoding="utf-8") as f:
+                            f.write(reply_text)
+                        os.replace(INBOX + ".tmp", INBOX)
+                        try:
+                            os.unlink(OUTBOX)
+                        except OSError:
+                            pass
+                        print(f"[Bridge Spool] Delivered response to inbox.md ({len(reply_text)} chars). Outbox removed.", flush=True)
+                    else:
+                        err = res.get("error", "Unknown error")
+                        print(f"[Bridge Spool] Error sending message: {err}", flush=True)
+                        with open(INBOX + ".tmp", "w", encoding="utf-8") as f:
+                            f.write(f"[BRIDGE ERROR] {err}\n")
+                        os.replace(INBOX + ".tmp", INBOX)
+        except Exception as e:
+            print(f"[Bridge Spool] Exception in spool loop: {e}", flush=True)
+        time.sleep(1.0)
+
+
 def run_daemon():
     if os.path.exists(SOCKET_PATH):
         try:
@@ -329,6 +376,10 @@ def run_daemon():
     cdp = CDPConnection()
     sid = cdp.attach_to_gemini()
     print(f"[Bridge Daemon] Attached to Gemini conversation, sessionId={sid}", flush=True)
+
+    # Start file spool watcher thread
+    spool_thread = threading.Thread(target=file_spool_loop, args=(cdp,), daemon=True)
+    spool_thread.start()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)

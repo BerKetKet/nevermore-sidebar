@@ -6,4 +6,5 @@
 worktrees/
 **/__pycache__/
 *.pyc
+.bridge/
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=Nevermore Manager AI File-Spool Chrome DevTools Bridge Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/bgg/projects/nevermore-sidebar/scripts/manager_bridge.py --daemon
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
