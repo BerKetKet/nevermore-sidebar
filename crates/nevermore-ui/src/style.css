@@ -222,3 +222,179 @@ window {
     border: none;
     font-size: 12px;
 }
+
+/* Widgets Tab */
+.widget-card {
+    background-color: #202024;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+
+.clock-time {
+    font-size: 24px;
+    font-weight: 800;
+    color: #f4f4f5;
+    letter-spacing: 0.5px;
+}
+
+.clock-date {
+    font-size: 11px;
+    font-weight: 500;
+    color: #a1a1aa;
+}
+
+.widget-header {
+    font-size: 10px;
+    font-weight: 700;
+    color: #71717a;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.btn-mute {
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.media-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f4f4f5;
+}
+
+.media-artist {
+    font-size: 11px;
+    color: #a1a1aa;
+}
+
+.btn-media {
+    background: #27272a;
+    color: #f4f4f5;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+/* Notepad Tab */
+.notepad-header-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #71717a;
+    letter-spacing: 0.5px;
+}
+
+.btn-notepad-clear {
+    background: transparent;
+    color: #a1a1aa;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.notepad-view {
+    background-color: #121214;
+    color: #f4f4f5;
+    font-size: 12px;
+    padding: 8px;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+}
+
+.notepad-status {
+    font-size: 10px;
+    color: #71717a;
+}
+
+/* Notifications Tab */
+.notif-header-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #71717a;
+    letter-spacing: 0.5px;
+}
+
+.notif-count-badge {
+    background-color: #27272a;
+    color: #0a84ff;
+    border-radius: 8px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.btn-dnd {
+    background: #202024;
+    color: #a1a1aa;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.btn-dnd.dnd-active {
+    background: #7f1d1d;
+    color: #f87171;
+    border-color: #dc2626;
+}
+
+.btn-notif-clear {
+    background: transparent;
+    color: #a1a1aa;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.notif-card {
+    background-color: #202024;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    transition: background 100ms ease;
+}
+
+.notif-card:hover {
+    background-color: #27272a;
+    border-color: #3f3f46;
+}
+
+.notif-app-name {
+    font-size: 10px;
+    font-weight: 700;
+    color: #60a5fa;
+    letter-spacing: 0.3px;
+}
+
+.notif-time {
+    font-size: 10px;
+    color: #71717a;
+}
+
+.notif-summary {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f4f4f5;
+}
+
+.notif-body {
+    font-size: 11px;
+    color: #a1a1aa;
+}
+
+.notif-empty {
+    color: #52525b;
+    font-size: 12px;
+    font-style: italic;
+}

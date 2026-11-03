@@ -1,6 +1,14 @@
 mod ipc_server;
 mod nav_rail;
+mod notepad_pane;
+mod notifications_pane;
 mod terminal_pane;
+mod widgets_pane;
+
+use notepad_pane::NotepadPane;
+use notifications_pane::NotificationsPane;
+use terminal_pane::TerminalPane;
+use widgets_pane::WidgetsPane;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
@@ -22,7 +30,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use terminal_pane::TerminalPane;
 
 pub const PANEL_WIDTH: i32 = 400;
 pub const NAV_RAIL_WIDTH: i32 = 60;
@@ -199,13 +206,23 @@ fn main() {
         content_area.append(&header);
         content_area.append(&content_stack);
 
-        // 5. Add Terminal Pane to Content Stack
+        // 5. Add Panes to Content Stack
         let terminal_pane = TerminalPane::new();
         content_stack.add_named(terminal_pane.widget(), Some("terminal"));
 
-        // Placeholder pages for other 8 tabs
+        let widgets_pane = WidgetsPane::new();
+        content_stack.add_named(widgets_pane.widget(), Some("widgets"));
+
+        let notif_pane = NotificationsPane::new(kwin.clone());
+        content_stack.add_named(notif_pane.widget(), Some("notifications"));
+
+        let notepad_pane = NotepadPane::new();
+        content_stack.add_named(notepad_pane.widget(), Some("notepad"));
+
+        // Placeholder pages for remaining 5 future tabs
+        let active_tabs = ["terminal", "widgets", "notifications", "notepad"];
         for (tab_id, _, tab_label) in nav_rail::TABS {
-            if *tab_id != "terminal" {
+            if !active_tabs.contains(tab_id) {
                 let tab_box = GtkBox::new(Orientation::Vertical, 12);
                 tab_box.set_hexpand(true);
                 tab_box.set_vexpand(true);
@@ -215,7 +232,7 @@ fn main() {
                 let text = if *tab_id == "email" {
                     "NEVERMORE // EMAIL\nEmail Feasibility — Phase 11 Spike".to_string()
                 } else {
-                    format!("NEVERMORE // {}\n(Phase 7 Tab)", tab_label)
+                    format!("NEVERMORE // {}\n(Phase 8-10 Tab)", tab_label)
                 };
                 let placeholder = Label::new(Some(&text));
                 placeholder.add_css_class("header-title");
