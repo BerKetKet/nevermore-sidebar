@@ -175,19 +175,41 @@ class CDPConnection:
         self.call('Input.insertText', {'text': text})
         time.sleep(0.5)
 
-        # 4. Click Send button or send Enter key
-        js_click_send = """
+        # 4. Click Send button via native trusted CDP mouse event
+        js_get_send_rect = """
         (() => {
-            const sendBtn = document.querySelector('button[aria-label*="Send"], button.send-button, .send-button-container button');
+            const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"], button.send-button');
             if (sendBtn && !sendBtn.disabled && sendBtn.offsetParent !== null) {
-                sendBtn.click();
-                return { clicked: true, method: 'button' };
+                const r = sendBtn.getBoundingClientRect();
+                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
             }
-            return { clicked: false };
+            return null;
         })()
         """
-        click_res = self.evaluate(js_click_send)
-        if not click_res.get('clicked'):
+        rect = self.evaluate(js_get_send_rect)
+        if rect:
+            self.call('Input.dispatchMouseEvent', {
+                'type': 'mouseMoved',
+                'x': rect['x'],
+                'y': rect['y']
+            })
+            time.sleep(0.1)
+            self.call('Input.dispatchMouseEvent', {
+                'type': 'mousePressed',
+                'x': rect['x'],
+                'y': rect['y'],
+                'button': 'left',
+                'clickCount': 1
+            })
+            time.sleep(0.05)
+            self.call('Input.dispatchMouseEvent', {
+                'type': 'mouseReleased',
+                'x': rect['x'],
+                'y': rect['y'],
+                'button': 'left',
+                'clickCount': 1
+            })
+        else:
             # Fallback: send Enter key via CDP Input.dispatchKeyEvent
             self.call('Input.dispatchKeyEvent', {
                 'type': 'rawKeyDown',
@@ -269,30 +291,59 @@ def run_daemon():
         except OSError:
             pass
 
-    print("[Bridge Daemon] Connecting to Chrome DevTools...")
+    print("[Bridge Daemon] Connecting to Chrome DevTools...", flush=True)
     cdp = CDPConnection()
     sid = cdp.attach_to_gemini()
-    print(f"[Bridge Daemon] Attached to Gemini conversation, sessionId={sid}")
+    print(f"[Bridge Daemon] Attached to Gemini conversation, sessionId={sid}", flush=True)
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     os.chmod(SOCKET_PATH, 0o700)
     server.listen(5)
-    print(f"[Bridge Daemon] Listening on {SOCKET_PATH}")
+    print(f"[Bridge Daemon] Listening on {SOCKET_PATH}", flush=True)
 
     while True:
         conn, _ = server.accept()
         try:
-            raw_req = conn.recv(1024 * 64)
-            if not raw_req:
+            chunks = []
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                try:
+                    req = json.loads(b"".join(chunks).decode('utf-8'))
+                    break
+                except json.JSONDecodeError:
+                    continue
+            if not chunks:
                 conn.close()
                 continue
-            req = json.loads(raw_req.decode('utf-8'))
             action = req.get('action')
             if action == 'send':
                 msg = req.get('message', '')
                 res = cdp.send_gemini_message(msg)
                 conn.sendall(json.dumps(res).encode('utf-8'))
+            elif action == 'click_send':
+                rect = cdp.evaluate("""
+                (() => {
+                    const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"], button.send-button');
+                    if (sendBtn && !sendBtn.disabled && sendBtn.offsetParent !== null) {
+                        const r = sendBtn.getBoundingClientRect();
+                        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                    }
+                    return null;
+                })()
+                """)
+                if rect:
+                    cdp.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': rect['x'], 'y': rect['y']})
+                    time.sleep(0.1)
+                    cdp.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
+                    time.sleep(0.05)
+                    cdp.call('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
+                    conn.sendall(json.dumps({'status': 'OK', 'clicked': True, 'rect': rect}).encode('utf-8'))
+                else:
+                    conn.sendall(json.dumps({'status': 'ERROR', 'error': 'Send button not found or disabled'}).encode('utf-8'))
             elif action == 'eval':
                 js = req.get('js', '')
                 res = cdp.evaluate(js)
@@ -315,6 +366,7 @@ def send_client(message):
     s.connect(SOCKET_PATH)
     req = {'action': 'send', 'message': message}
     s.sendall(json.dumps(req).encode('utf-8'))
+    s.shutdown(socket.SHUT_WR)
     
     data = b""
     while True:
@@ -330,12 +382,37 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Nevermore Manager Bridge")
     parser.add_argument("--daemon", action="store_true", help="Run as background daemon")
     parser.add_argument("--send", type=str, help="Send a message to Manager AI")
+    parser.add_argument("--send-file", type=str, help="Send contents of file to Manager AI")
+    parser.add_argument("--click-send", action="store_true", help="Click send button via CDP")
     args = parser.parse_args()
 
     if args.daemon:
         run_daemon()
     elif args.send:
         res = send_client(args.send)
-        print(res.get('text', ''))
+        if res.get('status') == 'OK':
+            print(res.get('text', ''))
+        else:
+            print(f"[BRIDGE ERROR] {res.get('error', res)}")
+    elif args.send_file:
+        with open(args.send_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        res = send_client(content)
+        if res.get('status') == 'OK':
+            print(res.get('text', ''))
+        else:
+            print(f"[BRIDGE ERROR] {res.get('error', res)}")
+    elif args.click_send:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps({'action': 'click_send'}).encode('utf-8'))
+        s.shutdown(socket.SHUT_WR)
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: break
+            data += chunk
+        s.close()
+        print(data.decode('utf-8'))
     else:
         parser.print_help()
