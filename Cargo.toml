@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/nevermore-core",
+    "crates/nevermore-cli",
+    "crates/nevermore-ui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["bgg"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/BerKetKet/nevermore-sidebar"
+
+[workspace.dependencies]
+nevermore-core = { path = "crates/nevermore-core" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154" }
+thiserror = { version = "=2.0.21" }
+clap = { version = "=4.6.7", features = ["derive"] }

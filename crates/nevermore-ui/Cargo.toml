@@ -1,0 +1,13 @@
+[package]
+name = "nevermore-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nevermore-ui"
+path = "src/main.rs"
+
+[dependencies]
+nevermore-core = { workspace = true }

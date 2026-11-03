@@ -1,0 +1,28 @@
+{
+  "lock-agents-md": {
+    "PreToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/hooks/check-immutable-files.py"
+          }
+        ]
+      }
+    ]
+  },
+  "cargo-fmt-post-write": {
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/hooks/post-write-check.py"
+          }
+        ]
+      }
+    ]
+  }
+}
