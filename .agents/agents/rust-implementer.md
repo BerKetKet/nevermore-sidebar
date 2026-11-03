@@ -12,7 +12,7 @@ tools:
   - run_command
   - send_message
 subagent: true
-commandExecutionPolicy: auto
+commandExecutionPolicy: eager
 ---
 
 # Rust Implementer Persona

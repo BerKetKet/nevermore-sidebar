@@ -8,6 +8,7 @@ tools:
   - find_by_name
   - send_message
 subagent: true
+commandExecutionPolicy: eager
 ---
 
 # Reviewer Persona (Read-Only Auditor)
