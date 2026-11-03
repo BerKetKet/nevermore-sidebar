@@ -23,7 +23,7 @@ This document records the exact versions of all system packages, libraries, and 
 | `wayland` | `1.26.0-1.1` | cachyos-extra-v3 | Display server protocol & client libraries | **Installed** |
 | `gtk4` | `1:4.24.1-1.1` | cachyos-extra-v3 | Candidate GUI toolkit (Bake-Off Option A) | **Installed** |
 | `gtk4-layer-shell` | `1.3.0-1.1` | cachyos-extra-v3 | Wayland `wlr-layer-shell` integration for GTK4 | **Installed** |
-| `vte4` | `0.84.1-1.1` | extra / cachyos-extra-v3 | GTK4 terminal emulator widget | ⚠️ **Available, not yet installed** |
+| `vte4` | `0.84.1-1.1` | cachyos-extra-v3 | GTK4 terminal emulator widget | **Installed** |
 | `tmux` | `3.8-1.1` | cachyos-extra-v3 | Durable terminal session daemon (`tmux -L nevermore`) | **Installed** |
 | `mpv` | `1:0.41.0-6.1` | cachyos-extra-v3 | Media playback engine backend | **Installed** |
 | `yt-dlp` | `2026.10.26-1` | cachyos-extra-v3 | Media streaming & audio extraction helper | **Installed** |
@@ -34,15 +34,9 @@ This document records the exact versions of all system packages, libraries, and 
 
 ---
 
-## ⚠️ Missing Packages & Installation Command
+## 📦 System Packages Status
 
-The only evaluated package from the mandate that is not currently installed on the host is **`vte4`** (Virtual Terminal Emulator widget for GTK4).
-
-To install it when needed for the Phase 3 Bake-Off:
-
-```bash
-sudo pacman -S vte4
-```
+All 13 required system packages are **fully installed and verified**. No missing dependencies remain.
 
 ---
 

@@ -21,3 +21,5 @@ All entries must record the exact command run, timestamp, stdout/stderr, measure
 | 2026-11-03 11:36 | Automated unit tests verification | `cargo test --workspace --verbose` | 7 tests run, 7 passed, 0 failed: `test_cli_parsing` ok, `test_cli_toggle_behavior` ok, `test_click_inside_engages_keyboard_focus` ok, `test_edge_hover_leads_to_peek` ok, `test_initial_state_is_hidden` ok, `test_pinned_state_overrides_pointer_leave` ok, `test_tab_switching_on_show` ok. Finished in 0.70s. Exit code 0. | VERIFIED |
 | 2026-11-03 11:36 | Rust code formatting verification | `cargo fmt --all -- --check` | Clean, 0 formatting errors. Exit code 0. | VERIFIED |
 | 2026-11-03 11:36 | Clippy linter verification | `cargo clippy --workspace --all-targets -- -D warnings` | Clean, 0 warnings. Exit code 0. | VERIFIED |
+| 2026-11-03 11:53 | Install missing vte4 dependency | `sudo pacman -S --noconfirm vte4` | Package installed: `vte4 0.84.1-1.1-x86_64_v3`. Exit code 0. | VERIFIED |
+| 2026-11-03 11:53 | Verify vte4 package installation | `pacman -Qi vte4` | Version: `0.84.1-1.1`, Provides: `libvte-2.91-gtk4.so=0-64`. Exit code 0. | VERIFIED |
