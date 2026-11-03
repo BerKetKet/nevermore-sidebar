@@ -53,12 +53,23 @@ class CDPConnection:
             f"Sec-WebSocket-Version: 13\r\n\r\n"
         )
         self.sock.sendall(req.encode())
+        self.sock.settimeout(2.0)
         resp = b""
+        start_t = time.time()
         while b"\r\n\r\n" not in resp:
-            chunk = self.sock.recv(1024)
-            if not chunk:
-                raise RuntimeError("Connection closed during WebSocket handshake")
-            resp += chunk
+            try:
+                chunk = self.sock.recv(1024)
+                if not chunk:
+                    break
+                resp += chunk
+            except socket.timeout:
+                # If handshake timed out, Chrome may be waiting for "Allow remote debugging?"
+                print("[Bridge Daemon] Handshake waiting, auto-clicking Allow prompt at (1405, 305)...", flush=True)
+                os.system("export YDOTOOL_SOCKET=/run/user/1000/.ydotool_socket; ydotool mousemove -a -x 1405 -y 305; sleep 0.05; ydotool click 0xC0")
+                if time.time() - start_t > 8.0:
+                    raise RuntimeError("WebSocket handshake timed out even after auto-clicking Allow")
+
+        self.sock.settimeout(None)
         if b"101 WebSocket" not in resp:
             raise RuntimeError(f"WebSocket handshake failed: {resp.decode('utf-8', errors='replace')}")
 
