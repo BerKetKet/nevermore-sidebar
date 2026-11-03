@@ -58,6 +58,11 @@ The legacy Plasma plasmoid repository (`https://github.com/berketket/nevermore`)
    - `Hidden`: Only a thin invisible right-edge hot strip exists; takes pointer hover, zero keyboard focus, ~0% idle CPU.
    - `Peek`: Hovering the hot edge slides panel in; takes NO keyboard focus so typing continues in active app; auto-hides after pointer leaves.
    - `Engaged`: Clicking inside panel grants keyboard focus for terminal/notepad; `Escape` or leaving transitions back to `Hidden`.
+   - `Pinned`: Pin button keeps panel open and overrides auto-hide until explicitly unpinned.
+10. **Browser Interaction & Manager Bridge Architecture:**
+    - All interaction with Chrome and Manager AI MUST route exclusively through the persistent user daemon (`nevermore-manager-bridge.service`) via Unix domain socket `/tmp/nevermore_bridge.sock` or `scripts/manager-cli`.
+    - Never open direct connections to Chrome's remote debugging port (port 9222) to avoid prompting the user.
+    - Handled via dedicated subagent `browser-bridge`.
    - `Pinned`: Pin button keeps panel open and overrides auto-hide until unpinned.
 
 ---

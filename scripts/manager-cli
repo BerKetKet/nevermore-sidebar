@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Nevermore Manager CLI
+# Routes all interactions through the persistent bridge daemon at /tmp/nevermore_bridge.sock
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/manager_bridge.py"
+
+exec /usr/bin/python3 "$PYTHON_SCRIPT" "$@"

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Nevermore Manager Bridge
-Maintains a persistent Chrome DevTools Protocol connection to the Manager AI
+Nevermore Manager Bridge Daemon & Client
+Maintains a single, persistent Chrome DevTools Protocol connection to the Manager AI
 conversation at https://gemini.google.com/app/71ae2007ae72440f.
-Uses native CDP Input events to bypass TrustedHTML restrictions.
+
+Prevents repeated Chrome DevTools permission prompts by holding ONE continuous WebSocket
+connection open in the daemon, exposing a local Unix domain socket (/tmp/nevermore_bridge.sock)
+for all scripts and subagents.
 """
 
 import sys
@@ -20,8 +23,17 @@ PORT_FILE = "/home/bgg/.config/google-chrome/DevToolsActivePort"
 REPLY_FILE = "/tmp/manager_latest_reply.md"
 TARGET_URL_SUBSTRING = "gemini.google.com/app/71ae2007ae72440f"
 
+
 class CDPConnection:
     def __init__(self):
+        self.sock = None
+        self.buf = bytearray()
+        self.msg_id = 0
+        self.session_id = None
+        self.lock = threading.Lock()
+        self.connect()
+
+    def connect(self):
         if not os.path.exists(PORT_FILE):
             raise RuntimeError(f"Chrome DevToolsActivePort file not found at {PORT_FILE}")
         with open(PORT_FILE) as f:
@@ -30,7 +42,7 @@ class CDPConnection:
         self.path = lines[1]
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect(("127.0.0.1", self.port))
-        
+
         # HTTP Upgrade to WebSocket
         req = (
             f"GET {self.path} HTTP/1.1\r\n"
@@ -49,12 +61,25 @@ class CDPConnection:
             resp += chunk
         if b"101 WebSocket" not in resp:
             raise RuntimeError(f"WebSocket handshake failed: {resp.decode('utf-8', errors='replace')}")
-            
+
         self.buf = bytearray()
         self.msg_id = 0
         self.session_id = None
-        self.lock = threading.Lock()
-        
+
+    def close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+        self.sock = None
+
+    def reconnect(self):
+        self.close()
+        time.sleep(1)
+        self.connect()
+        self.attach_to_gemini()
+
     def _send_frame(self, data_str):
         data = data_str.encode('utf-8')
         length = len(data)
@@ -117,7 +142,7 @@ class CDPConnection:
             if use_session and self.session_id:
                 payload['sessionId'] = self.session_id
             self._send_frame(json.dumps(payload))
-            
+
             while True:
                 msg = self._recv_frame()
                 if not msg:
@@ -135,7 +160,7 @@ class CDPConnection:
                 break
         if not gemini_target:
             raise RuntimeError(f"No Chrome tab found with URL matching '{TARGET_URL_SUBSTRING}'")
-            
+
         target_id = gemini_target['targetId']
         attach_resp = self.call('Target.attachToTarget', {'targetId': target_id, 'flatten': True}, use_session=False)
         self.session_id = attach_resp.get('result', {}).get('sessionId')
@@ -152,12 +177,44 @@ class CDPConnection:
             raise RuntimeError(f"JS Exception: {res['exceptionDetails']}")
         return res.get('result', {}).get('value')
 
+    def get_latest_reply(self):
+        js = """
+        (() => {
+            const responses = document.querySelectorAll('message-content, .model-response-text');
+            if (responses.length === 0) return '';
+            const last = responses[responses.length - 1];
+            return last.innerText;
+        })()
+        """
+        text = self.evaluate(js) or ""
+        with open(REPLY_FILE, "w", encoding="utf-8") as f:
+            f.write(text)
+        return text
+
+    def get_status(self):
+        js = """
+        (() => {
+            const ql = document.querySelector('rich-textarea div.ql-editor') || document.querySelector('rich-textarea [contenteditable="true"]');
+            const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"], button.send-button');
+            const body = document.body.innerText;
+            const quota = body.includes("reached your usage limit") || body.includes("resets at") || body.includes("limit for today");
+            const responses = document.querySelectorAll('message-content, .model-response-text');
+            return {
+                attached: true,
+                has_editor: !!ql,
+                has_send_btn: !!sendBtn,
+                quota_limited: quota,
+                response_count: responses.length
+            };
+        })()
+        """
+        return self.evaluate(js)
+
     def send_gemini_message(self, text):
-        # 1. Check initial model response count
         js_count = "document.querySelectorAll('message-content, .model-response-text').length"
         initial_count = self.evaluate(js_count) or 0
-        
-        # 2. Focus the editor element
+
+        # Focus editor
         js_focus = """
         (() => {
             const ql = document.querySelector('rich-textarea div.ql-editor') || document.querySelector('rich-textarea [contenteditable="true"]');
@@ -170,12 +227,10 @@ class CDPConnection:
             raise RuntimeError("Could not find or focus chat editor element")
 
         time.sleep(0.3)
-
-        # 3. Insert text via CDP Input.insertText (bypasses TrustedHTML)
         self.call('Input.insertText', {'text': text})
         time.sleep(0.5)
 
-        # 4. Click Send button via native trusted CDP mouse event
+        # Click send
         js_get_send_rect = """
         (() => {
             const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"], button.send-button');
@@ -188,57 +243,26 @@ class CDPConnection:
         """
         rect = self.evaluate(js_get_send_rect)
         if rect:
-            self.call('Input.dispatchMouseEvent', {
-                'type': 'mouseMoved',
-                'x': rect['x'],
-                'y': rect['y']
-            })
+            self.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': rect['x'], 'y': rect['y']})
             time.sleep(0.1)
-            self.call('Input.dispatchMouseEvent', {
-                'type': 'mousePressed',
-                'x': rect['x'],
-                'y': rect['y'],
-                'button': 'left',
-                'clickCount': 1
-            })
+            self.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
             time.sleep(0.05)
-            self.call('Input.dispatchMouseEvent', {
-                'type': 'mouseReleased',
-                'x': rect['x'],
-                'y': rect['y'],
-                'button': 'left',
-                'clickCount': 1
-            })
+            self.call('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
         else:
-            # Fallback: send Enter key via CDP Input.dispatchKeyEvent
-            self.call('Input.dispatchKeyEvent', {
-                'type': 'rawKeyDown',
-                'windowsVirtualKeyCode': 13,
-                'unmodifiedText': '\r',
-                'text': '\r',
-                'code': 'Enter',
-                'key': 'Enter'
-            })
-            self.call('Input.dispatchKeyEvent', {
-                'type': 'keyUp',
-                'windowsVirtualKeyCode': 13,
-                'code': 'Enter',
-                'key': 'Enter'
-            })
+            self.call('Input.dispatchKeyEvent', {'type': 'rawKeyDown', 'windowsVirtualKeyCode': 13, 'unmodifiedText': '\r', 'text': '\r', 'code': 'Enter', 'key': 'Enter'})
+            self.call('Input.dispatchKeyEvent', {'type': 'keyUp', 'windowsVirtualKeyCode': 13, 'code': 'Enter', 'key': 'Enter'})
 
-        # 5. Wait for new response turn to appear
+        # Wait for new turn
         start_time = time.time()
-        timeout = 180  # 3 minutes max
+        timeout = 180
         new_turn_detected = False
-        
+
         while time.time() - start_time < timeout:
             time.sleep(2)
-            # Check for quota limit banner
             js_quota = """
             (() => {
                 const text = document.body.innerText;
-                const hit = text.includes("reached your usage limit") || text.includes("limit for today") || text.includes("try again later");
-                return hit;
+                return text.includes("reached your usage limit") || text.includes("limit for today") || text.includes("try again later");
             })()
             """
             if self.evaluate(js_quota):
@@ -252,11 +276,10 @@ class CDPConnection:
         if not new_turn_detected:
             raise RuntimeError("Timed out waiting for Manager AI response turn to appear")
 
-        # 6. Wait for streaming to complete (stable length for 6 seconds)
+        # Wait for streaming completion
         last_len = -1
         stable_count = 0
         latest_text = ""
-        
         js_get_latest = """
         (() => {
             const responses = document.querySelectorAll('message-content, .model-response-text');
@@ -271,18 +294,18 @@ class CDPConnection:
             curr_text = self.evaluate(js_get_latest) or ""
             if len(curr_text) == last_len and len(curr_text) > 0:
                 stable_count += 1
-                if stable_count >= 3:  # 6 seconds unchanged
+                if stable_count >= 3:
                     latest_text = curr_text
                     break
             else:
                 stable_count = 0
                 last_len = len(curr_text)
 
-        # Write to latest reply file
         with open(REPLY_FILE, "w", encoding="utf-8") as f:
             f.write(latest_text)
 
         return {"status": "OK", "text": latest_text}
+
 
 def run_daemon():
     if os.path.exists(SOCKET_PATH):
@@ -291,7 +314,7 @@ def run_daemon():
         except OSError:
             pass
 
-    print("[Bridge Daemon] Connecting to Chrome DevTools...", flush=True)
+    print("[Bridge Daemon] Connecting to Chrome DevTools (one-time persistent connection)...", flush=True)
     cdp = CDPConnection()
     sid = cdp.attach_to_gemini()
     print(f"[Bridge Daemon] Attached to Gemini conversation, sessionId={sid}", flush=True)
@@ -299,7 +322,7 @@ def run_daemon():
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     os.chmod(SOCKET_PATH, 0o700)
-    server.listen(5)
+    server.listen(10)
     print(f"[Bridge Daemon] Listening on {SOCKET_PATH}", flush=True)
 
     while True:
@@ -319,100 +342,102 @@ def run_daemon():
             if not chunks:
                 conn.close()
                 continue
+
             action = req.get('action')
-            if action == 'send':
-                msg = req.get('message', '')
-                res = cdp.send_gemini_message(msg)
-                conn.sendall(json.dumps(res).encode('utf-8'))
-            elif action == 'click_send':
-                rect = cdp.evaluate("""
-                (() => {
-                    const sendBtn = document.querySelector('button[aria-label*="Send message"], button[aria-label*="Send"], button.send-button');
-                    if (sendBtn && !sendBtn.disabled && sendBtn.offsetParent !== null) {
-                        const r = sendBtn.getBoundingClientRect();
-                        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-                    }
-                    return null;
-                })()
-                """)
-                if rect:
-                    cdp.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': rect['x'], 'y': rect['y']})
-                    time.sleep(0.1)
-                    cdp.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
-                    time.sleep(0.05)
-                    cdp.call('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': rect['x'], 'y': rect['y'], 'button': 'left', 'clickCount': 1})
-                    conn.sendall(json.dumps({'status': 'OK', 'clicked': True, 'rect': rect}).encode('utf-8'))
+            try:
+                if action == 'send':
+                    msg = req.get('message', '')
+                    res = cdp.send_gemini_message(msg)
+                    conn.sendall(json.dumps(res).encode('utf-8'))
+                elif action == 'get_latest':
+                    text = cdp.get_latest_reply()
+                    conn.sendall(json.dumps({'status': 'OK', 'text': text}).encode('utf-8'))
+                elif action == 'status':
+                    st = cdp.get_status()
+                    conn.sendall(json.dumps({'status': 'OK', 'data': st}).encode('utf-8'))
+                elif action == 'eval':
+                    js = req.get('js', '')
+                    res = cdp.evaluate(js)
+                    conn.sendall(json.dumps({'status': 'OK', 'result': res}).encode('utf-8'))
+                elif action == 'ping':
+                    conn.sendall(json.dumps({'status': 'OK'}).encode('utf-8'))
                 else:
-                    conn.sendall(json.dumps({'status': 'ERROR', 'error': 'Send button not found or disabled'}).encode('utf-8'))
-            elif action == 'eval':
-                js = req.get('js', '')
-                res = cdp.evaluate(js)
-                conn.sendall(json.dumps({'status': 'OK', 'result': res}).encode('utf-8'))
-            elif action == 'ping':
-                conn.sendall(json.dumps({'status': 'OK'}).encode('utf-8'))
-            else:
-                conn.sendall(json.dumps({'status': 'ERROR', 'error': 'Unknown action'}).encode('utf-8'))
+                    conn.sendall(json.dumps({'status': 'ERROR', 'error': 'Unknown action'}).encode('utf-8'))
+            except (socket.error, RuntimeError) as e:
+                # Attempt one reconnect on socket drop
+                print(f"[Bridge Daemon] Connection error: {e}. Attempting reconnect...", flush=True)
+                try:
+                    cdp.reconnect()
+                    conn.sendall(json.dumps({'status': 'ERROR', 'error': f"Reconnected after error: {e}"}).encode('utf-8'))
+                except Exception as re_err:
+                    conn.sendall(json.dumps({'status': 'ERROR', 'error': f"Failed to reconnect: {re_err}"}).encode('utf-8'))
+
         except Exception as e:
             conn.sendall(json.dumps({'status': 'ERROR', 'error': str(e)}).encode('utf-8'))
         finally:
             conn.close()
 
-def send_client(message):
+
+def send_ipc(action, **kwargs):
     if not os.path.exists(SOCKET_PATH):
-        print("Bridge socket not found. Start daemon with: scripts/manager_bridge.py --daemon")
-        sys.exit(1)
+        raise RuntimeError(f"Bridge socket {SOCKET_PATH} not found. Is nevermore-manager-bridge service running?")
 
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(SOCKET_PATH)
-    req = {'action': 'send', 'message': message}
+    req = {'action': action, **kwargs}
     s.sendall(json.dumps(req).encode('utf-8'))
     s.shutdown(socket.SHUT_WR)
-    
+
     data = b""
     while True:
         chunk = s.recv(4096)
-        if not chunk: break
+        if not chunk:
+            break
         data += chunk
     s.close()
-    
-    res = json.loads(data.decode('utf-8'))
-    return res
+    return json.loads(data.decode('utf-8'))
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Nevermore Manager Bridge")
+    parser = argparse.ArgumentParser(description="Nevermore Manager Bridge Daemon & Client")
     parser.add_argument("--daemon", action="store_true", help="Run as background daemon")
-    parser.add_argument("--send", type=str, help="Send a message to Manager AI")
-    parser.add_argument("--send-file", type=str, help="Send contents of file to Manager AI")
-    parser.add_argument("--click-send", action="store_true", help="Click send button via CDP")
+    parser.add_argument("--send", type=str, help="Send message to Manager AI")
+    parser.add_argument("--send-file", type=str, help="Send file content to Manager AI")
+    parser.add_argument("--get-latest", action="store_true", help="Get latest reply from Manager AI")
+    parser.add_argument("--status", action="store_true", help="Check bridge and tab status")
+    parser.add_argument("--eval", type=str, help="Evaluate JS expression in Gemini tab")
+    parser.add_argument("--ping", action="store_true", help="Check daemon health")
     args = parser.parse_args()
 
     if args.daemon:
         run_daemon()
     elif args.send:
-        res = send_client(args.send)
+        res = send_ipc('send', message=args.send)
         if res.get('status') == 'OK':
             print(res.get('text', ''))
         else:
-            print(f"[BRIDGE ERROR] {res.get('error', res)}")
+            print(f"[BRIDGE ERROR] {res.get('error', res)}", file=sys.stderr)
+            sys.exit(1)
     elif args.send_file:
         with open(args.send_file, "r", encoding="utf-8") as f:
             content = f.read()
-        res = send_client(content)
+        res = send_ipc('send', message=content)
         if res.get('status') == 'OK':
             print(res.get('text', ''))
         else:
-            print(f"[BRIDGE ERROR] {res.get('error', res)}")
-    elif args.click_send:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(SOCKET_PATH)
-        s.sendall(json.dumps({'action': 'click_send'}).encode('utf-8'))
-        s.shutdown(socket.SHUT_WR)
-        data = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk: break
-            data += chunk
-        s.close()
-        print(data.decode('utf-8'))
+            print(f"[BRIDGE ERROR] {res.get('error', res)}", file=sys.stderr)
+            sys.exit(1)
+    elif args.get_latest:
+        res = send_ipc('get_latest')
+        print(res.get('text', ''))
+    elif args.status:
+        res = send_ipc('status')
+        print(json.dumps(res, indent=2))
+    elif args.eval:
+        res = send_ipc('eval', js=args.eval)
+        print(json.dumps(res, indent=2))
+    elif args.ping:
+        res = send_ipc('ping')
+        print(json.dumps(res, indent=2))
     else:
         parser.print_help()
