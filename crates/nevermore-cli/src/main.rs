@@ -1,11 +1,14 @@
 use clap::{Parser, Subcommand};
-use nevermore_core::{SidebarEvent, SidebarStateMachine};
+use nevermore_core::{send_ipc_request, IpcRequest, IpcResponse};
 
 #[derive(Parser, Debug)]
 #[command(name = "nevermore")]
 #[command(author = "bgg")]
 #[command(version = "0.1.0")]
-#[command(about = "Nevermore Wayland Sidebar CLI controller", long_about = None)]
+#[command(
+    about = "Nevermore Wayland Sidebar CLI controller",
+    long_about = "Controls and inspects the resident Nevermore Wayland sidebar via local IPC."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -26,40 +29,98 @@ enum Commands {
     Pin,
     /// Output the current sidebar state, active tab, and visibility
     Status,
+    /// List active terminal sessions running in the tmux backend
+    Sessions,
+    /// List active background transient tasks managed by systemd
+    Tasks,
+    /// Launch a command as a transient background task via systemd
+    Run {
+        /// Command string to execute
+        command: String,
+        /// Optional working directory
+        #[arg(short, long)]
+        dir: Option<String>,
+    },
+    /// Raise or activate an external application window by desktop entry
+    Raise {
+        /// Desktop entry name (e.g. org.kde.konsole)
+        desktop_entry: String,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    // Prototype state machine invocation (in later phases, connected to the daemon socket)
-    let mut sm = SidebarStateMachine::new();
+    let request = match &cli.command {
+        Commands::Toggle => IpcRequest::Toggle,
+        Commands::Show { tab } => IpcRequest::Show { tab: tab.clone() },
+        Commands::Hide => IpcRequest::Hide,
+        Commands::Pin => IpcRequest::Pin,
+        Commands::Status => IpcRequest::Status,
+        Commands::Sessions => IpcRequest::ListSessions,
+        Commands::Tasks => IpcRequest::ListTasks,
+        Commands::Run { command, dir } => IpcRequest::LaunchTask {
+            command: command.clone(),
+            working_dir: dir.clone().unwrap_or_default(),
+        },
+        Commands::Raise { desktop_entry } => IpcRequest::RaiseApp {
+            desktop_entry: desktop_entry.clone(),
+        },
+    };
 
-    match cli.command {
-        Commands::Toggle => {
-            let next = sm.transition(SidebarEvent::CliToggle);
-            println!("Sidebar toggled -> {:?}", next);
+    match send_ipc_request(&request) {
+        Ok(IpcResponse::State {
+            state,
+            active_tab,
+            is_visible,
+            takes_focus,
+        }) => {
+            println!("Sidebar State: {:?}", state);
+            println!("Active Tab: {}", active_tab);
+            println!("Visible: {}", is_visible);
+            println!("Keyboard Focus: {}", takes_focus);
         }
-        Commands::Show { tab } => {
-            let next = sm.transition(SidebarEvent::CliShow { tab: tab.clone() });
-            println!(
-                "Sidebar show (tab: {}) -> {:?}",
-                tab.as_deref().unwrap_or("default"),
-                next
-            );
+        Ok(IpcResponse::Sessions(sessions)) => {
+            if sessions.is_empty() {
+                println!("No active tmux sessions.");
+            } else {
+                println!(
+                    "{:<10} {:<20} {:<10} {:<8}",
+                    "ID", "NAME", "ATTACHED", "WINDOWS"
+                );
+                println!("{}", "-".repeat(50));
+                for s in sessions {
+                    println!(
+                        "{:<10} {:<20} {:<10} {:<8}",
+                        s.id, s.name, s.attached_clients, s.windows_count
+                    );
+                }
+            }
         }
-        Commands::Hide => {
-            let next = sm.transition(SidebarEvent::CliHide);
-            println!("Sidebar hidden -> {:?}", next);
+        Ok(IpcResponse::Tasks(tasks)) => {
+            if tasks.is_empty() {
+                println!("No background tasks found.");
+            } else {
+                println!("{:<35} {:<15} {:<30}", "UNIT", "STATE", "COMMAND");
+                println!("{}", "-".repeat(80));
+                for t in tasks {
+                    println!("{:<35} {:<15?} {:<30}", t.unit, t.state, t.command);
+                }
+            }
         }
-        Commands::Pin => {
-            let next = sm.transition(SidebarEvent::CliPin);
-            println!("Sidebar pin toggled -> {:?}", next);
+        Ok(IpcResponse::Logs(logs)) => {
+            print!("{}", logs);
         }
-        Commands::Status => {
-            println!("State: {:?}", sm.state());
-            println!("Visible: {}", sm.state().is_visible());
-            println!("Keyboard Focus: {}", sm.state().takes_keyboard_focus());
-            println!("Active Tab: {}", sm.active_tab());
+        Ok(IpcResponse::Ok) => {
+            println!("Operation completed successfully.");
+        }
+        Ok(IpcResponse::Error(err)) => {
+            eprintln!("Error from daemon: {}", err);
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("Communication error: {}", err);
+            std::process::exit(2);
         }
     }
 }
@@ -83,5 +144,14 @@ mod tests {
 
         let cli = Cli::try_parse_from(["nevermore", "status"]).unwrap();
         assert_eq!(cli.command, Commands::Status);
+
+        let cli = Cli::try_parse_from(["nevermore", "run", "make build", "-d", "/tmp"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Commands::Run {
+                command: "make build".to_string(),
+                dir: Some("/tmp".to_string()),
+            }
+        );
     }
 }
