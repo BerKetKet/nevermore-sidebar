@@ -1,7 +1,10 @@
+use crate::icons;
+use gtk4::accessible::Property;
 use gtk4::prelude::*;
 use gtk4::{
     Box as GtkBox, Button, Label, Orientation, PolicyType, ScrolledWindow, TextBuffer, TextView,
 };
+use nevermore_core::theme::ThemePalette;
 use std::cell::RefCell;
 use std::env;
 use std::fs;
@@ -11,13 +14,15 @@ use std::rc::Rc;
 pub struct NotepadPane {
     container: GtkBox,
     status_label: Label,
+    btn_clear: Button,
     buffer: TextBuffer,
     file_path: PathBuf,
     debounce_source: RefCell<Option<glib::SourceId>>,
+    palette: RefCell<ThemePalette>,
 }
 
 impl NotepadPane {
-    pub fn new(file_path: PathBuf) -> Rc<Self> {
+    pub fn new(file_path: PathBuf, theme: &ThemePalette) -> Rc<Self> {
         let container = GtkBox::new(Orientation::Vertical, 6);
         container.set_margin_start(8);
         container.set_margin_end(8);
@@ -45,17 +50,18 @@ impl NotepadPane {
             }
         }
 
-        // Header Action Bar
+        // Header Action Bar (zero static title text, Lucide eraser icon)
         let header_bar = GtkBox::new(Orientation::Horizontal, 6);
-        let header_title = Label::new(Some("SCRATCHPAD"));
-        header_title.add_css_class("notepad-header-title");
-        header_title.set_hexpand(true);
-        header_title.set_xalign(0.0);
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
 
-        let btn_clear = Button::with_label("Clear");
+        let btn_clear = Button::new();
         btn_clear.add_css_class("btn-notepad-clear");
+        btn_clear.set_tooltip_text(Some("Clear Notepad"));
+        btn_clear.update_property(&[Property::Label("Clear Notepad")]);
+        icons::set_button_icon(&btn_clear, "eraser", &theme.text_secondary, 16);
 
-        header_bar.append(&header_title);
+        header_bar.append(&spacer);
         header_bar.append(&btn_clear);
 
         // Multi-line Text View
@@ -79,7 +85,7 @@ impl NotepadPane {
 
         scrolled.set_child(Some(&text_view));
 
-        // Footer status bar
+        // Footer status bar (compact numeric data only, e.g. "12w · 64c")
         let footer = GtkBox::new(Orientation::Horizontal, 8);
         let status_label = Label::new(None);
         status_label.add_css_class("notepad-status");
@@ -94,9 +100,11 @@ impl NotepadPane {
         let pane = Rc::new(Self {
             container,
             status_label,
+            btn_clear: btn_clear.clone(),
             buffer: buffer.clone(),
             file_path,
             debounce_source: RefCell::new(None),
+            palette: RefCell::new(theme.clone()),
         });
 
         pane.update_counts(&buffer);
@@ -118,20 +126,17 @@ impl NotepadPane {
                     src.remove();
                 }
 
-                let text = {
-                    let start = buf.start_iter();
-                    let end = buf.end_iter();
-                    buf.text(&start, &end, false).to_string()
-                };
-
-                let p_timer = p.clone();
+                let p_debounce = p.clone();
+                let buf_clone = buf.clone();
                 let source_id =
                     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                        p_timer.debounce_source.borrow_mut().take();
-                        p_timer.save_to_disk(&text);
+                        let start = buf_clone.start_iter();
+                        let end = buf_clone.end_iter();
+                        let text = buf_clone.text(&start, &end, false);
+                        p_debounce.save_to_disk(&text);
+                        *p_debounce.debounce_source.borrow_mut() = None;
                         glib::ControlFlow::Break
                     });
-
                 *p.debounce_source.borrow_mut() = Some(source_id);
             }
         });
@@ -141,6 +146,11 @@ impl NotepadPane {
 
     pub fn widget(&self) -> &GtkBox {
         &self.container
+    }
+
+    pub fn apply_theme(&self, theme: &ThemePalette) {
+        *self.palette.borrow_mut() = theme.clone();
+        icons::set_button_icon(&self.btn_clear, "eraser", &theme.text_secondary, 16);
     }
 
     /// Flushes any pending unsaved text immediately to disk (called on hide/shutdown).
@@ -162,7 +172,7 @@ impl NotepadPane {
         let word_count = text.split_whitespace().count();
 
         self.status_label
-            .set_label(&format!("{} words  |  {} chars", word_count, char_count));
+            .set_label(&format!("{}w · {}c", word_count, char_count));
     }
 
     fn save_to_disk(&self, content: &str) {

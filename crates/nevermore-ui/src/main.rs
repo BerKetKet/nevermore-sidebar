@@ -1,13 +1,15 @@
+mod icons;
 mod ipc_server;
 mod nav_rail;
 mod plugin_api;
 mod plugins;
 
+use gtk4::accessible::Property;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, EventControllerKey,
-    EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick, Label,
+    EventControllerMotion, EventControllerScroll, EventControllerScrollFlags, GestureClick,
     Orientation, Stack,
 };
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
@@ -17,8 +19,8 @@ use nevermore_core::ipc::IpcResponse;
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::state::{SidebarEvent, SidebarState, SidebarStateMachine};
 use nevermore_core::theme::{
-    custom_css_path, get_active_theme_name, install_bundled_themes, list_available_themes,
-    load_theme, set_active_theme_name,
+    contrast_text_color_for_hex, custom_css_path, get_active_theme_name, install_bundled_themes,
+    list_available_themes, load_theme, set_active_theme_name, ThemePalette,
 };
 use nevermore_core::tmux::TmuxBackend;
 use nevermore_core::traits::{SessionBackend, TaskBackend, WindowRaiser};
@@ -110,7 +112,7 @@ fn main() {
             .build();
 
         hot_edge_window.init_layer_shell();
-        hot_edge_window.set_layer(Layer::Top);
+        hot_edge_window.set_layer(Layer::Overlay);
         hot_edge_window.set_exclusive_zone(-1);
         hot_edge_window.set_anchor(Edge::Right, true);
         hot_edge_window.set_anchor(Edge::Top, true);
@@ -196,64 +198,62 @@ fn main() {
         content_area.set_hexpand(false);
         content_area.set_vexpand(true);
 
-        let header = GtkBox::new(Orientation::Horizontal, 8);
+        // Slim Icon-Only Header (~36px) preserving Zone Rule horizontal swipe
+        let header = GtkBox::new(Orientation::Horizontal, 6);
         header.add_css_class("sidebar-header");
 
-        let title_lbl = Label::new(Some("NEVERMORE // TERMINAL"));
-        title_lbl.add_css_class("header-title");
-        title_lbl.set_hexpand(true);
-        title_lbl.set_xalign(0.0);
-        title_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
 
-        let badge_state = Label::new(Some("HIDDEN"));
-        badge_state.add_css_class("badge-state");
-
-        let btn_pin = Button::with_label("📌");
+        let btn_pin = Button::new();
         btn_pin.set_tooltip_text(Some("Toggle Pin"));
+        btn_pin.update_property(&[Property::Label("Toggle Pin")]);
         btn_pin.add_css_class("btn-header-pin");
+        icons::set_button_icon(&btn_pin, "pin", &theme_cell.borrow().text_secondary, 16);
 
-        let btn_close = Button::with_label("✕");
+        let btn_close = Button::new();
         btn_close.set_tooltip_text(Some("Close Sidebar (Escape)"));
+        btn_close.update_property(&[Property::Label("Close Sidebar")]);
         btn_close.add_css_class("btn-header-close");
+        icons::set_button_icon(&btn_close, "x", &theme_cell.borrow().text_secondary, 16);
 
-        header.append(&title_lbl);
-        header.append(&badge_state);
+        header.append(&spacer);
         header.append(&btn_pin);
         header.append(&btn_close);
 
         content_area.append(&header);
         content_area.append(&content_stack);
 
-        // Shared Context for Visual Updates (P0-1)
+        // Shared Context for Visual Updates
         struct UiContext {
             hot_edge_window: ApplicationWindow,
             panel_window: ApplicationWindow,
             state_machine: Arc<Mutex<SidebarStateMachine>>,
-            badge_state: Label,
             btn_pin: Button,
+            btn_close: Button,
             nav_rail: RefCell<Option<Rc<NavRail>>>,
             content_stack: Stack,
-            title_lbl: Label,
             leave_source: RefCell<Option<glib::SourceId>>,
             peek_grace_source: RefCell<Option<glib::SourceId>>,
             registry: Rc<RefCell<PluginRegistry>>,
+            theme: Rc<RefCell<ThemePalette>>,
         }
 
         let ctx = Rc::new(UiContext {
             hot_edge_window: hot_edge_window.clone(),
             panel_window: panel_window.clone(),
             state_machine: state_machine.clone(),
-            badge_state: badge_state.clone(),
             btn_pin: btn_pin.clone(),
+            btn_close: btn_close.clone(),
             nav_rail: RefCell::new(None),
             content_stack: content_stack.clone(),
-            title_lbl: title_lbl.clone(),
             leave_source: RefCell::new(None),
             peek_grace_source: RefCell::new(None),
             registry: registry.clone(),
+            theme: theme_cell.clone(),
         });
 
-        // Single authoritative apply_state synchronizer (P0-1)
+        // Single authoritative apply_state synchronizer
         let apply_state = {
             let ctx = ctx.clone();
             Rc::new(move || {
@@ -263,69 +263,75 @@ fn main() {
                 let is_visible = state.is_visible();
                 drop(sm);
 
-                // Single source of truth updates
-                ctx.title_lbl
-                    .set_label(&format!("NEVERMORE // {}", active_tab.to_uppercase()));
                 ctx.content_stack.set_visible_child_name(&active_tab);
                 if let Some(ref nr) = *ctx.nav_rail.borrow() {
                     nr.set_active_tab(&active_tab);
                 }
-                ctx.registry
-                    .borrow_mut()
-                    .sync_lifecycle(is_visible, &active_tab);
 
+                let theme = ctx.theme.borrow();
                 match state {
                     SidebarState::Hidden => {
                         ctx.panel_window.set_visible(false);
                         ctx.hot_edge_window.set_visible(true);
-                        ctx.badge_state.set_label("HIDDEN");
-                        ctx.badge_state.remove_css_class("engaged");
-                        ctx.badge_state.remove_css_class("pinned");
+                        ctx.hot_edge_window.present();
+                        ctx.panel_window.remove_css_class("state-engaged");
                         ctx.btn_pin.remove_css_class("pinned");
+                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Peek => {
                         ctx.hot_edge_window.set_visible(false);
                         ctx.panel_window.set_visible(true);
+                        ctx.panel_window.present();
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
-                        ctx.badge_state.set_label("PEEK");
-                        ctx.badge_state.remove_css_class("engaged");
-                        ctx.badge_state.remove_css_class("pinned");
+                        ctx.panel_window.remove_css_class("state-engaged");
                         ctx.btn_pin.remove_css_class("pinned");
+                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Engaged => {
                         ctx.hot_edge_window.set_visible(false);
                         ctx.panel_window.set_visible(true);
+                        ctx.panel_window.present();
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
-                        ctx.badge_state.set_label("ENGAGED");
-                        ctx.badge_state.add_css_class("engaged");
-                        ctx.badge_state.remove_css_class("pinned");
+                        ctx.panel_window.add_css_class("state-engaged");
                         ctx.btn_pin.remove_css_class("pinned");
+                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Pinned => {
                         ctx.hot_edge_window.set_visible(false);
                         ctx.panel_window.set_visible(true);
+                        ctx.panel_window.present();
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
-                        ctx.badge_state.set_label("PINNED");
-                        ctx.badge_state.remove_css_class("engaged");
-                        ctx.badge_state.add_css_class("pinned");
+                        ctx.panel_window.remove_css_class("state-engaged");
                         ctx.btn_pin.add_css_class("pinned");
+                        let accent_fg = contrast_text_color_for_hex(&theme.accent_color);
+                        icons::set_button_icon(&ctx.btn_pin, "pin-off", accent_fg, 16);
                     }
                 }
+                drop(theme);
+
+                // A4: Sync plugin lifecycle AFTER window mapping and keyboard mode configuration
+                ctx.registry
+                    .borrow_mut()
+                    .sync_lifecycle(is_visible, &active_tab);
             })
         };
 
-        // Construct NavRail routed through state machine (P0-1)
+        // Construct NavRail routed through state machine
         let sm_for_nav = state_machine.clone();
         let apply_nav = apply_state.clone();
-        let nav_rail = NavRail::new(&registry.borrow().manifests(), move |tab_name| {
-            let mut sm = sm_for_nav.lock().unwrap();
-            let _ = sm.set_active_tab(tab_name);
-            drop(sm);
-            apply_nav();
-        });
+        let nav_rail = NavRail::new(
+            &registry.borrow().manifests(),
+            &theme_cell.borrow(),
+            move |tab_name| {
+                let mut sm = sm_for_nav.lock().unwrap();
+                let _ = sm.set_active_tab(tab_name);
+                drop(sm);
+                apply_nav();
+            },
+        );
         nav_rail.widget().set_size_request(NAV_RAIL_WIDTH, -1);
         nav_rail.widget().set_hexpand(false);
         *ctx.nav_rail.borrow_mut() = Some(nav_rail.clone());
@@ -386,12 +392,11 @@ fn main() {
             apply_close();
         });
 
-        // Pointer Enter on Hot Edge Window (Hidden -> Peek + 1500ms Grace Timer) (P2-1)
+        // Pointer Enter on Hot Edge Window (Hidden -> Peek + 1500ms Grace Timer)
         let edge_motion = EventControllerMotion::new();
         let apply_edge = apply_state.clone();
         let ctx_edge = ctx.clone();
         edge_motion.connect_enter(move |_, _, _| {
-            // Cancel previous peek grace timer
             if let Some(src) = ctx_edge.peek_grace_source.borrow_mut().take() {
                 src.remove();
             }
@@ -403,7 +408,6 @@ fn main() {
                 .transition(SidebarEvent::PointerEnterEdge);
             apply_edge();
 
-            // Start 1500ms Peek grace timer
             let ctx_grace = ctx_edge.clone();
             let apply_grace = apply_edge.clone();
             let source_id = glib::timeout_add_local(
@@ -549,7 +553,7 @@ fn main() {
         glib::spawn_future_local(async move {
             while let Ok(cmd) = ipc_rx.recv().await {
                 let start_t = Instant::now();
-                let response = match cmd.request {
+                match cmd.request {
                     nevermore_core::ipc::IpcRequest::Toggle => {
                         let mut sm = ctx_ipc.state_machine.lock().unwrap();
                         let next = sm.transition(SidebarEvent::CliToggle);
@@ -561,12 +565,12 @@ fn main() {
                             "[IPC] Toggle executed in {:.2} ms -> {:?}",
                             latency_ms, next
                         );
-                        IpcResponse::State {
+                        let _ = cmd.responder.send(IpcResponse::State {
                             state: next,
                             active_tab: tab,
                             is_visible: next.is_visible(),
                             takes_focus: next.takes_keyboard_focus(),
-                        }
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::Show { tab } => {
                         let mut sm = ctx_ipc.state_machine.lock().unwrap();
@@ -574,10 +578,10 @@ fn main() {
                             if !sm.is_valid_tab(t) {
                                 let valid = sm.valid_tabs().to_vec();
                                 drop(sm);
-                                IpcResponse::Error(format!(
+                                let _ = cmd.responder.send(IpcResponse::Error(format!(
                                     "Invalid tab '{}'. Valid tabs are: {:?}",
                                     t, valid
-                                ))
+                                )));
                             } else {
                                 let next = sm.transition(SidebarEvent::CliShow { tab });
                                 let active = sm.active_tab().to_string();
@@ -588,12 +592,12 @@ fn main() {
                                     "[IPC] Show executed in {:.2} ms -> {:?}",
                                     latency_ms, next
                                 );
-                                IpcResponse::State {
+                                let _ = cmd.responder.send(IpcResponse::State {
                                     state: next,
                                     active_tab: active,
                                     is_visible: next.is_visible(),
                                     takes_focus: next.takes_keyboard_focus(),
-                                }
+                                });
                             }
                         } else {
                             let next = sm.transition(SidebarEvent::CliShow { tab });
@@ -602,12 +606,12 @@ fn main() {
                             apply_ipc();
                             let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
                             println!("[IPC] Show executed in {:.2} ms -> {:?}", latency_ms, next);
-                            IpcResponse::State {
+                            let _ = cmd.responder.send(IpcResponse::State {
                                 state: next,
                                 active_tab: active,
                                 is_visible: next.is_visible(),
                                 takes_focus: next.takes_keyboard_focus(),
-                            }
+                            });
                         }
                     }
                     nevermore_core::ipc::IpcRequest::Hide => {
@@ -618,12 +622,12 @@ fn main() {
                         apply_ipc();
                         let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
                         println!("[IPC] Hide executed in {:.2} ms -> {:?}", latency_ms, next);
-                        IpcResponse::State {
+                        let _ = cmd.responder.send(IpcResponse::State {
                             state: next,
                             active_tab: tab,
                             is_visible: next.is_visible(),
                             takes_focus: next.takes_keyboard_focus(),
-                        }
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::Pin => {
                         let mut sm = ctx_ipc.state_machine.lock().unwrap();
@@ -633,95 +637,194 @@ fn main() {
                         apply_ipc();
                         let latency_ms = start_t.elapsed().as_secs_f64() * 1000.0;
                         println!("[IPC] Pin executed in {:.2} ms -> {:?}", latency_ms, next);
-                        IpcResponse::State {
+                        let _ = cmd.responder.send(IpcResponse::State {
                             state: next,
                             active_tab: tab,
                             is_visible: next.is_visible(),
                             takes_focus: next.takes_keyboard_focus(),
-                        }
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::Status => {
                         let sm = ctx_ipc.state_machine.lock().unwrap();
-                        IpcResponse::State {
+                        let _ = cmd.responder.send(IpcResponse::State {
                             state: sm.state(),
                             active_tab: sm.active_tab().to_string(),
                             is_visible: sm.state().is_visible(),
                             takes_focus: sm.state().takes_keyboard_focus(),
-                        }
+                        });
                     }
-                    nevermore_core::ipc::IpcRequest::ListSessions => match tmux_ipc.list_sessions()
-                    {
-                        Ok(sessions) => IpcResponse::Sessions(sessions),
-                        Err(e) => IpcResponse::Error(e.to_string()),
-                    },
+                    // A2: Offload blocking IPC arms to gio::spawn_blocking
+                    nevermore_core::ipc::IpcRequest::ListSessions => {
+                        let tmux = tmux_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || match tmux.list_sessions() {
+                                Ok(sessions) => IpcResponse::Sessions(sessions),
+                                Err(e) => IpcResponse::Error(e.to_string()),
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
+                    }
                     nevermore_core::ipc::IpcRequest::CreateSession { name } => {
-                        match tmux_ipc.create_session(&name) {
-                            Ok(_) => IpcResponse::Ok,
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
+                        let tmux = tmux_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res =
+                                gio::spawn_blocking(move || match tmux.create_session(&name) {
+                                    Ok(_) => IpcResponse::Ok,
+                                    Err(e) => IpcResponse::Error(e.to_string()),
+                                })
+                                .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::KillSession { id } => {
-                        match tmux_ipc.kill_session(&id) {
-                            Ok(_) => IpcResponse::Ok,
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
+                        let tmux = tmux_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || match tmux.kill_session(&id) {
+                                Ok(_) => IpcResponse::Ok,
+                                Err(e) => IpcResponse::Error(e.to_string()),
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
                     }
-                    nevermore_core::ipc::IpcRequest::ListTasks => match systemd_ipc.list_tasks() {
-                        Ok(tasks) => IpcResponse::Tasks(tasks),
-                        Err(e) => IpcResponse::Error(e.to_string()),
-                    },
+                    nevermore_core::ipc::IpcRequest::ListTasks => {
+                        let systemd = systemd_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || match systemd.list_tasks() {
+                                Ok(tasks) => IpcResponse::Tasks(tasks),
+                                Err(e) => IpcResponse::Error(e.to_string()),
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
+                    }
                     nevermore_core::ipc::IpcRequest::LaunchTask {
                         command,
                         working_dir,
-                    } => match systemd_ipc.launch_task(&command, &working_dir) {
-                        Ok(_) => IpcResponse::Ok,
-                        Err(e) => IpcResponse::Error(e.to_string()),
-                    },
+                    } => {
+                        let systemd = systemd_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || {
+                                match systemd.launch_task(&command, &working_dir) {
+                                    Ok(_) => IpcResponse::Ok,
+                                    Err(e) => IpcResponse::Error(e.to_string()),
+                                }
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
+                    }
                     nevermore_core::ipc::IpcRequest::GetTaskLogs { unit, line_count } => {
-                        match systemd_ipc.get_task_logs(&unit, line_count) {
-                            Ok(logs) => IpcResponse::Logs(logs),
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
+                        let systemd = systemd_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || {
+                                match systemd.get_task_logs(&unit, line_count) {
+                                    Ok(logs) => IpcResponse::Logs(logs),
+                                    Err(e) => IpcResponse::Error(e.to_string()),
+                                }
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::StopTask { unit } => {
-                        match systemd_ipc.stop_task(&unit) {
-                            Ok(_) => IpcResponse::Ok,
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
+                        let systemd = systemd_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || match systemd.stop_task(&unit) {
+                                Ok(_) => IpcResponse::Ok,
+                                Err(e) => IpcResponse::Error(e.to_string()),
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::RaiseApp { desktop_entry } => {
-                        match kwin_ipc.raise_application(&desktop_entry) {
-                            Ok(_) => IpcResponse::Ok,
-                            Err(e) => IpcResponse::Error(e.to_string()),
-                        }
+                        let kwin = kwin_ipc.clone();
+                        let responder = cmd.responder;
+                        glib::spawn_future_local(async move {
+                            let res = gio::spawn_blocking(move || {
+                                match kwin.raise_application(&desktop_entry) {
+                                    Ok(_) => IpcResponse::Ok,
+                                    Err(e) => IpcResponse::Error(e.to_string()),
+                                }
+                            })
+                            .await;
+                            let response = res.unwrap_or_else(|_| {
+                                IpcResponse::Error("Worker thread panicked".to_string())
+                            });
+                            let _ = responder.send(response);
+                        });
                     }
                     nevermore_core::ipc::IpcRequest::ListThemes => {
                         let active = get_active_theme_name();
                         let available = list_available_themes();
-                        IpcResponse::Themes { active, available }
+                        let _ = cmd
+                            .responder
+                            .send(IpcResponse::Themes { active, available });
                     }
-                    nevermore_core::ipc::IpcRequest::SetTheme { name } => match load_theme(&name) {
-                        Ok(new_palette) => {
-                            *theme_ipc.borrow_mut() = new_palette.clone();
-                            let _ = set_active_theme_name(&name);
-                            css_prov_ipc.load_from_string(&new_palette.to_gtk_css());
+                    nevermore_core::ipc::IpcRequest::SetTheme { name } => {
+                        let response = match load_theme(&name) {
+                            Ok(new_palette) => {
+                                *theme_ipc.borrow_mut() = new_palette.clone();
+                                let _ = set_active_theme_name(&name);
+                                css_prov_ipc.load_from_string(&new_palette.to_gtk_css());
 
-                            // Reload custom.css if present (Directive P3-2)
-                            let custom_css = custom_css_path();
-                            if custom_css.exists() {
-                                if let Ok(custom_str) = std::fs::read_to_string(&custom_css) {
-                                    user_prov_ipc.load_from_string(&custom_str);
+                                // Reload custom.css if present
+                                let custom_css = custom_css_path();
+                                if custom_css.exists() {
+                                    if let Ok(custom_str) = std::fs::read_to_string(&custom_css) {
+                                        user_prov_ipc.load_from_string(&custom_str);
+                                    }
                                 }
-                            }
 
-                            reg_ipc.borrow_mut().on_theme_changed(&new_palette);
-                            println!("[THEME] Switched active theme live to '{}'", name);
-                            IpcResponse::Ok
-                        }
-                        Err(e) => IpcResponse::Error(e),
-                    },
-                };
-                let _ = cmd.responder.send(response);
+                                reg_ipc.borrow_mut().on_theme_changed(&new_palette);
+                                if let Some(ref nr) = *ctx_ipc.nav_rail.borrow() {
+                                    nr.on_theme_changed(&new_palette);
+                                }
+                                icons::set_button_icon(
+                                    &ctx_ipc.btn_close,
+                                    "x",
+                                    &new_palette.text_secondary,
+                                    16,
+                                );
+                                apply_ipc();
+                                println!("[THEME] Switched active theme live to '{}'", name);
+                                IpcResponse::Ok
+                            }
+                            Err(e) => IpcResponse::Error(e),
+                        };
+                        let _ = cmd.responder.send(response);
+                    }
+                }
             }
         });
 
@@ -735,6 +838,16 @@ fn main() {
         }
 
         // Present initial UI in Hidden mode
+        let hw_log = hot_edge_window.clone();
+        let hb_log = hot_edge_box.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            println!(
+                "[HOT_EDGE] Allocated geometry: window width={}, window height={}, box height={}",
+                hw_log.width(),
+                hw_log.height(),
+                hb_log.height()
+            );
+        });
         apply_state();
         hot_edge_window.present();
 

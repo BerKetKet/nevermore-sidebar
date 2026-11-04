@@ -168,6 +168,19 @@ mod tests {
 
     #[test]
     fn test_systemd_task_launch_and_inspect() {
+        if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_err() {
+            eprintln!("Skipping systemd user bus test: no user D-Bus session");
+            return;
+        }
+        let check = std::process::Command::new("systemctl")
+            .arg("--user")
+            .arg("status")
+            .output();
+        if check.is_err() || !check.unwrap().status.success() {
+            eprintln!("Skipping systemd user bus test: systemctl --user unavailable");
+            return;
+        }
+
         let backend = SystemdTaskBackend::new("test-nevermore-unit");
         let task = backend
             .launch_task("echo 'Hello Nevermore Task'", "/tmp")

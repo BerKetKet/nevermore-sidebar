@@ -4,6 +4,7 @@ use crate::plugin_api::{PluginContext, SidebarPlugin};
 use gtk4::prelude::*;
 use gtk4::Widget;
 use nevermore_core::plugin::PluginManifest;
+use nevermore_core::theme::ThemePalette;
 pub use pane::WidgetsPane;
 use std::rc::Rc;
 
@@ -34,8 +35,9 @@ impl SidebarPlugin for WidgetsPlugin {
         &self.manifest
     }
 
-    fn build_widget(&mut self, _ctx: &PluginContext) -> Widget {
-        let pane = WidgetsPane::new();
+    fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
+        let theme = ctx.theme();
+        let pane = WidgetsPane::new(&theme);
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
@@ -50,6 +52,12 @@ impl SidebarPlugin for WidgetsPlugin {
     fn on_hide(&mut self) {
         if let Some(ref pane) = self.pane {
             pane.on_hide();
+        }
+    }
+
+    fn on_theme_changed(&mut self, theme: &ThemePalette) {
+        if let Some(ref pane) = self.pane {
+            pane.apply_theme(theme);
         }
     }
 }

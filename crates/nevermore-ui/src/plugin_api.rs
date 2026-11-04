@@ -116,3 +116,22 @@ pub fn wrap_in_plugin_container(widget: &Widget, manages_own_scroll: bool) -> Sc
     scrolled.set_child(Some(widget));
     scrolled
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_in_plugin_container_clamp() {
+        if gtk4::init().is_err() {
+            eprintln!("Skipping container clamp test: no display available");
+            return;
+        }
+        let box_widget = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        box_widget.set_size_request(1000, 50);
+        let container = wrap_in_plugin_container(&box_widget.upcast::<Widget>(), false);
+        assert_eq!(container.min_content_width(), PLUGIN_CONTENT_WIDTH);
+        assert_eq!(container.max_content_width(), PLUGIN_CONTENT_WIDTH);
+        assert!(!container.propagates_natural_width());
+    }
+}

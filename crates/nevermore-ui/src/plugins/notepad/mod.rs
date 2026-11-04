@@ -4,6 +4,7 @@ use crate::plugin_api::{PluginContext, SidebarPlugin};
 use gtk4::prelude::*;
 use gtk4::Widget;
 use nevermore_core::plugin::PluginManifest;
+use nevermore_core::theme::ThemePalette;
 pub use pane::NotepadPane;
 use std::rc::Rc;
 
@@ -36,7 +37,8 @@ impl SidebarPlugin for NotepadPlugin {
 
     fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
         let notes_file = ctx.data_dir.join("notes.txt");
-        let pane = NotepadPane::new(notes_file);
+        let theme = ctx.theme();
+        let pane = NotepadPane::new(notes_file, &theme);
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
@@ -45,6 +47,12 @@ impl SidebarPlugin for NotepadPlugin {
     fn on_hide(&mut self) {
         if let Some(ref pane) = self.pane {
             pane.flush_save();
+        }
+    }
+
+    fn on_theme_changed(&mut self, theme: &ThemePalette) {
+        if let Some(ref pane) = self.pane {
+            pane.apply_theme(theme);
         }
     }
 }

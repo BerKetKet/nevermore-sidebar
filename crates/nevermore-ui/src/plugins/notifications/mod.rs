@@ -5,6 +5,7 @@ use crate::plugin_api::{PluginContext, SidebarPlugin};
 use gtk4::prelude::*;
 use gtk4::Widget;
 use nevermore_core::plugin::PluginManifest;
+use nevermore_core::theme::ThemePalette;
 pub use pane::NotificationsPane;
 use std::rc::Rc;
 
@@ -36,7 +37,7 @@ impl SidebarPlugin for NotificationsPlugin {
     }
 
     fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
-        let pane = NotificationsPane::new(ctx.kwin.clone());
+        let pane = NotificationsPane::new(ctx.kwin.clone(), &ctx.theme());
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
@@ -45,6 +46,13 @@ impl SidebarPlugin for NotificationsPlugin {
     fn on_show(&mut self) {
         if let Some(ref pane) = self.pane {
             pane.update_relative_times();
+            pane.refresh_dnd_state();
+        }
+    }
+
+    fn on_theme_changed(&mut self, theme: &ThemePalette) {
+        if let Some(ref pane) = self.pane {
+            pane.apply_theme(theme);
         }
     }
 }

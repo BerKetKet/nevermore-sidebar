@@ -1,6 +1,7 @@
+use crate::icons;
 use crate::plugin_api::{PluginContext, SidebarPlugin};
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Label, Orientation, Widget};
+use gtk4::{Box as GtkBox, Orientation, Widget};
 use nevermore_core::plugin::PluginManifest;
 
 pub struct PlaceholderPlugin {
@@ -26,26 +27,23 @@ impl SidebarPlugin for PlaceholderPlugin {
         &self.manifest
     }
 
-    fn build_widget(&mut self, _ctx: &PluginContext) -> Widget {
+    fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
         let container = GtkBox::new(Orientation::Vertical, 12);
         container.set_hexpand(true);
         container.set_vexpand(true);
         container.set_valign(gtk4::Align::Center);
         container.set_halign(gtk4::Align::Center);
 
-        let title_text = if self.manifest.id == "email" {
-            "NEVERMORE // EMAIL\nEmail Feasibility — Phase 11 Spike".to_string()
+        let icon_name = if !self.manifest.icon.is_empty() {
+            self.manifest.icon.as_str()
         } else {
-            format!(
-                "NEVERMORE // {}\n(Phase 8-10 Tab)",
-                self.manifest.title.to_uppercase()
-            )
+            self.manifest.id.as_str()
         };
 
-        let label = Label::new(Some(&title_text));
-        label.add_css_class("header-title");
-        label.set_justify(gtk4::Justification::Center);
-        container.append(&label);
+        let theme = ctx.theme();
+        let icon_img = icons::create_icon_widget(icon_name, &theme.text_secondary, 40);
+        icon_img.set_opacity(0.6);
+        container.append(&icon_img);
 
         container.upcast::<Widget>()
     }

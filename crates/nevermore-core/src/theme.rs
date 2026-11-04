@@ -395,6 +395,15 @@ window {{
 
 .sidebar-panel {{
     background-color: {bg_primary};
+    border-left: 1px solid {border_color};
+}}
+
+.sidebar-panel.state-engaged {{
+    border-left: 2px solid {accent_color};
+}}
+
+.sidebar-panel.state-pinned {{
+    border-left: 2px solid {accent_color};
 }}
 
 /* 2px Hot-Edge Strip when Hidden */
@@ -937,7 +946,18 @@ pub fn set_active_theme_name(theme_name: &str) -> Result<(), String> {
     let cfg_path = config_file_path();
     let mut table = if cfg_path.exists() {
         let s = fs::read_to_string(&cfg_path).unwrap_or_default();
-        toml::from_str::<toml::Table>(&s).unwrap_or_default()
+        match toml::from_str::<toml::Table>(&s) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "[nevermore-theme] warning: existing config.toml failed to parse ({}), backing up to config.toml.bak",
+                    e
+                );
+                let bak_path = cfg_path.with_extension("toml.bak");
+                let _ = fs::copy(&cfg_path, &bak_path);
+                toml::Table::new()
+            }
+        }
     } else {
         toml::Table::new()
     };

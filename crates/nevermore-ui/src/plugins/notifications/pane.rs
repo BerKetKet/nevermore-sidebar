@@ -1,16 +1,21 @@
 use super::parser::{DbusNotificationParser, ParsedNotification};
+use crate::icons;
+use gtk4::accessible::Property;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, GestureClick, Label, Orientation, PolicyType, ScrolledWindow};
+use gtk4::{
+    Box as GtkBox, Button, GestureClick, Image, Label, Orientation, PolicyType, ScrolledWindow,
+};
 use nevermore_core::kwin::KWinAdapter;
+use nevermore_core::theme::{contrast_text_color_for_hex, ThemePalette};
 use nevermore_core::traits::WindowRaiser;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,17 +24,21 @@ pub type NotificationItem = ParsedNotification;
 pub struct NotificationsPane {
     container: GtkBox,
     list_box: GtkBox,
-    empty_label: Label,
+    empty_box: GtkBox,
+    empty_img: Image,
+    btn_dnd: Button,
+    btn_clear: Button,
     dnd_cookie: RefCell<Option<u32>>,
     dbus_conn: Option<gio::DBusConnection>,
     kwin: KWinAdapter,
-    count_label: Label,
     items: RefCell<Vec<NotificationItem>>,
     time_labels: RefCell<Vec<(Label, u64)>>,
+    current_theme: RefCell<ThemePalette>,
+    self_weak: RefCell<Option<Weak<NotificationsPane>>>,
 }
 
 impl NotificationsPane {
-    pub fn new(kwin: KWinAdapter) -> Rc<Self> {
+    pub fn new(kwin: KWinAdapter, theme: &ThemePalette) -> Rc<Self> {
         let container = GtkBox::new(Orientation::Vertical, 8);
         container.set_margin_start(8);
         container.set_margin_end(8);
@@ -38,25 +47,25 @@ impl NotificationsPane {
         container.set_hexpand(true);
         container.set_vexpand(true);
 
-        // Header Action Bar
+        // Header Action Bar: Spacer + DND icon button + Clear icon button
         let header = GtkBox::new(Orientation::Horizontal, 6);
-        let title = Label::new(Some("NOTIFICATIONS FEED"));
-        title.add_css_class("notif-header-title");
-        title.set_hexpand(true);
-        title.set_xalign(0.0);
 
-        let count_label = Label::new(Some("0"));
-        count_label.add_css_class("notif-count-badge");
+        let spacer = GtkBox::new(Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
 
-        let btn_dnd = Button::with_label("🔔 DND OFF");
+        let btn_dnd = Button::new();
         btn_dnd.add_css_class("btn-dnd");
         btn_dnd.set_tooltip_text(Some("Toggle Do Not Disturb"));
+        btn_dnd.update_property(&[Property::Label("Toggle Do Not Disturb")]);
+        icons::set_button_icon(&btn_dnd, "bell", &theme.text_secondary, 16);
 
-        let btn_clear = Button::with_label("Clear All");
+        let btn_clear = Button::new();
         btn_clear.add_css_class("btn-notif-clear");
+        btn_clear.set_tooltip_text(Some("Clear All"));
+        btn_clear.update_property(&[Property::Label("Clear All")]);
+        icons::set_button_icon(&btn_clear, "trash-2", &theme.text_secondary, 16);
 
-        header.append(&title);
-        header.append(&count_label);
+        header.append(&spacer);
         header.append(&btn_dnd);
         header.append(&btn_clear);
 
@@ -72,11 +81,16 @@ impl NotificationsPane {
         let list_box = GtkBox::new(Orientation::Vertical, 6);
         list_box.set_hexpand(true);
 
-        let empty_label = Label::new(Some("No recent notifications"));
-        empty_label.add_css_class("notif-empty");
-        empty_label.set_vexpand(true);
-        empty_label.set_valign(gtk4::Align::Center);
-        list_box.append(&empty_label);
+        // Text-free empty state: Centered dim 32px Lucide inbox icon
+        let empty_box = GtkBox::new(Orientation::Vertical, 0);
+        empty_box.set_vexpand(true);
+        empty_box.set_valign(gtk4::Align::Center);
+        empty_box.set_halign(gtk4::Align::Center);
+        empty_box.add_css_class("notif-empty");
+
+        let empty_img = icons::create_icon_widget("inbox", &theme.text_secondary, 32);
+        empty_box.append(&empty_img);
+        list_box.append(&empty_box);
 
         scroll.set_child(Some(&list_box));
 
@@ -88,19 +102,25 @@ impl NotificationsPane {
         let pane = Rc::new(Self {
             container,
             list_box,
-            empty_label,
+            empty_box,
+            empty_img,
+            btn_dnd: btn_dnd.clone(),
+            btn_clear: btn_clear.clone(),
             dnd_cookie: RefCell::new(None),
             dbus_conn,
             kwin,
-            count_label,
             items: RefCell::new(Vec::new()),
             time_labels: RefCell::new(Vec::new()),
+            current_theme: RefCell::new(theme.clone()),
+            self_weak: RefCell::new(None),
         });
 
-        // Connect DND Toggle with persistent session D-Bus connection (P2-2 / N5)
+        *pane.self_weak.borrow_mut() = Some(Rc::downgrade(&pane));
+
+        // Connect DND Toggle
         let pane_dnd = pane.clone();
-        btn_dnd.connect_clicked(move |b| {
-            pane_dnd.toggle_dnd(b);
+        btn_dnd.connect_clicked(move |_| {
+            pane_dnd.toggle_dnd();
         });
 
         // Connect Clear All
@@ -109,7 +129,7 @@ impl NotificationsPane {
             pane_clear.clear_all();
         });
 
-        // Spawn supervised D-Bus Monitor thread (P2-2 / N3 & N4)
+        // Spawn supervised D-Bus Monitor thread
         let (tx, rx) = async_channel::unbounded::<NotificationItem>();
         Self::spawn_dbus_monitor(tx);
 
@@ -128,9 +148,25 @@ impl NotificationsPane {
         &self.container
     }
 
+    pub fn apply_theme(&self, theme: &ThemePalette) {
+        *self.current_theme.borrow_mut() = theme.clone();
+
+        let empty_tex = icons::icon_texture("inbox", &theme.text_secondary, 32);
+        self.empty_img.set_paintable(Some(&empty_tex));
+
+        icons::set_button_icon(&self.btn_clear, "trash-2", &theme.text_secondary, 16);
+
+        if self.dnd_cookie.borrow().is_some() {
+            let accent_fg = contrast_text_color_for_hex(&theme.accent_color);
+            icons::set_button_icon(&self.btn_dnd, "bell-off", accent_fg, 16);
+        } else {
+            icons::set_button_icon(&self.btn_dnd, "bell", &theme.text_secondary, 16);
+        }
+    }
+
     pub fn add_notification(&self, item: NotificationItem) {
         if self.items.borrow().is_empty() {
-            self.list_box.remove(&self.empty_label);
+            self.list_box.remove(&self.empty_box);
         }
 
         // Cap at 100 items: evict oldest if at capacity
@@ -179,12 +215,19 @@ impl NotificationsPane {
             card.append(&body_lbl);
         }
 
-        // Click on notification card raises application window (Spike 08)
+        // Click on notification card raises application window non-blocking (A2)
         let de = item.desktop_entry.clone();
         let kwin = self.kwin.clone();
         let click_gesture = GestureClick::new();
         click_gesture.connect_released(move |_, _, _, _| {
-            let _ = kwin.raise_application(&de);
+            let de_clone = de.clone();
+            let kwin_clone = kwin.clone();
+            glib::spawn_future_local(async move {
+                let _ = gio::spawn_blocking(move || {
+                    let _ = kwin_clone.raise_application(&de_clone);
+                })
+                .await;
+            });
         });
         card.add_controller(click_gesture);
 
@@ -194,9 +237,6 @@ impl NotificationsPane {
             .borrow_mut()
             .push((time_lbl, item.timestamp_unix));
         items.push(item);
-
-        let count = items.len();
-        self.count_label.set_label(&count.to_string());
     }
 
     pub fn update_relative_times(&self) {
@@ -212,13 +252,13 @@ impl NotificationsPane {
             .as_secs();
         let elapsed = now_unix.saturating_sub(timestamp_unix);
         if elapsed < 60 {
-            "Just now".to_string()
+            "now".to_string()
         } else if elapsed < 3600 {
-            format!("{}m ago", elapsed / 60)
+            format!("{}m", elapsed / 60)
         } else if elapsed < 86400 {
-            format!("{}h ago", elapsed / 3600)
+            format!("{}h", elapsed / 3600)
         } else {
-            format!("{}d ago", elapsed / 86400)
+            format!("{}d", elapsed / 86400)
         }
     }
 
@@ -228,72 +268,178 @@ impl NotificationsPane {
         }
         self.items.borrow_mut().clear();
         self.time_labels.borrow_mut().clear();
-        self.list_box.append(&self.empty_label);
-        self.count_label.set_label("0");
+        self.list_box.append(&self.empty_box);
     }
 
-    /// Persistent session D-Bus Inhibit / UnInhibit holding the active connection (N5)
-    fn toggle_dnd(&self, btn: &Button) {
+    /// Asynchronous non-blocking DND toggle with 2000ms timeout (A2)
+    pub fn toggle_dnd(self: &Rc<Self>) {
         let Some(ref conn) = self.dbus_conn else {
             eprintln!("[nevermore-notif] No active session D-Bus connection available for DND");
             return;
         };
 
-        let mut cookie_slot = self.dnd_cookie.borrow_mut();
-        if let Some(cookie) = *cookie_slot {
-            // Uninhibit via active D-Bus connection
-            let params = (cookie,).to_variant();
-            let _ = conn.call_sync(
-                Some("org.freedesktop.Notifications"),
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "UnInhibit",
-                Some(&params),
-                None,
-                gio::DBusCallFlags::NONE,
-                -1,
-                gio::Cancellable::NONE,
-            );
+        let conn = conn.clone();
+        let weak = self.self_weak.borrow().clone();
+        let is_currently_inhibited = self.dnd_cookie.borrow().is_some();
 
-            *cookie_slot = None;
-            btn.set_label("🔔 DND OFF");
-            btn.remove_css_class("dnd-active");
-            println!("[DND] Uninhibited notifications (cookie: {})", cookie);
+        if is_currently_inhibited {
+            let cookie = self.dnd_cookie.borrow().unwrap();
+            let params = (cookie,).to_variant();
+
+            glib::spawn_future_local(async move {
+                let res = conn
+                    .call_future(
+                        Some("org.freedesktop.Notifications"),
+                        "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications",
+                        "UnInhibit",
+                        Some(&params),
+                        None,
+                        gio::DBusCallFlags::NONE,
+                        2000,
+                    )
+                    .await;
+
+                if let Some(w) = weak {
+                    if let Some(pane) = w.upgrade() {
+                        match res {
+                            Ok(_) => {
+                                *pane.dnd_cookie.borrow_mut() = None;
+                                pane.btn_dnd.remove_css_class("dnd-active");
+                                let theme = pane.current_theme.borrow();
+                                icons::set_button_icon(
+                                    &pane.btn_dnd,
+                                    "bell",
+                                    &theme.text_secondary,
+                                    16,
+                                );
+                                println!("[DND] Uninhibited notifications (cookie: {})", cookie);
+                            }
+                            Err(e) => {
+                                eprintln!("[nevermore-notif] Failed to UnInhibit: {}", e);
+                            }
+                        }
+                    }
+                }
+            });
         } else {
-            // Inhibit via active D-Bus connection
             let empty_hints: HashMap<String, glib::Variant> = HashMap::new();
             let params = ("nevermore", "Nevermore DND", empty_hints).to_variant();
 
-            match conn.call_sync(
-                Some("org.freedesktop.Notifications"),
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "Inhibit",
-                Some(&params),
-                Some(glib::VariantTy::new("(u)").unwrap()),
-                gio::DBusCallFlags::NONE,
-                -1,
-                gio::Cancellable::NONE,
-            ) {
-                Ok(reply) => {
-                    if let Some(c) = reply.child_value(0).get::<u32>() {
-                        *cookie_slot = Some(c);
-                        btn.set_label("🔕 DND ON");
-                        btn.add_css_class("dnd-active");
-                        println!(
-                            "[DND] Inhibited notifications on active bus (cookie: {})",
-                            c
-                        );
+            glib::spawn_future_local(async move {
+                let res = conn
+                    .call_future(
+                        Some("org.freedesktop.Notifications"),
+                        "/org/freedesktop/Notifications",
+                        "org.freedesktop.Notifications",
+                        "Inhibit",
+                        Some(&params),
+                        Some(glib::VariantTy::new("(u)").unwrap()),
+                        gio::DBusCallFlags::NONE,
+                        2000,
+                    )
+                    .await;
+
+                if let Some(w) = weak {
+                    if let Some(pane) = w.upgrade() {
+                        match res {
+                            Ok(reply) => {
+                                if let Some(c) = reply.child_value(0).get::<u32>() {
+                                    *pane.dnd_cookie.borrow_mut() = Some(c);
+                                    pane.btn_dnd.add_css_class("dnd-active");
+                                    let theme = pane.current_theme.borrow();
+                                    let accent_fg =
+                                        contrast_text_color_for_hex(&theme.accent_color);
+                                    icons::set_button_icon(
+                                        &pane.btn_dnd,
+                                        "bell-off",
+                                        accent_fg,
+                                        16,
+                                    );
+                                    println!(
+                                        "[DND] Inhibited notifications on active bus (cookie: {})",
+                                        c
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[nevermore-notif] Failed to call D-Bus Inhibit: {}", e);
+                            }
+                        }
                     }
                 }
-                Err(e) => {
-                    eprintln!("[nevermore-notif] Failed to call D-Bus Inhibit: {}", e);
-                }
-            }
+            });
         }
     }
 
-    /// Supervised dbus-monitor with kernel PR_SET_PDEATHSIG + auto-restart backoff (N3 & N4)
+    /// Asynchronously check if D-Bus Notifications daemon still has inhibition active (A5)
+    pub fn refresh_dnd_state(self: &Rc<Self>) {
+        let Some(ref conn) = self.dbus_conn else {
+            return;
+        };
+
+        if self.dnd_cookie.borrow().is_none() {
+            return;
+        }
+
+        let conn = conn.clone();
+        let weak = self.self_weak.borrow().clone();
+
+        glib::spawn_future_local(async move {
+            let params = ("org.freedesktop.Notifications", "Inhibited").to_variant();
+            let res = conn
+                .call_future(
+                    Some("org.freedesktop.Notifications"),
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.DBus.Properties",
+                    "Get",
+                    Some(&params),
+                    Some(glib::VariantTy::new("(v)").unwrap()),
+                    gio::DBusCallFlags::NONE,
+                    1000,
+                )
+                .await;
+
+            if let Some(w) = weak {
+                if let Some(pane) = w.upgrade() {
+                    match res {
+                        Ok(val) => {
+                            let is_inhibited = val
+                                .child_value(0)
+                                .child_value(0)
+                                .get::<bool>()
+                                .unwrap_or(false);
+                            if !is_inhibited && pane.dnd_cookie.borrow().is_some() {
+                                *pane.dnd_cookie.borrow_mut() = None;
+                                pane.btn_dnd.remove_css_class("dnd-active");
+                                let theme = pane.current_theme.borrow();
+                                icons::set_button_icon(
+                                    &pane.btn_dnd,
+                                    "bell",
+                                    &theme.text_secondary,
+                                    16,
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            // Daemon might have restarted or unreachable
+                            *pane.dnd_cookie.borrow_mut() = None;
+                            pane.btn_dnd.remove_css_class("dnd-active");
+                            let theme = pane.current_theme.borrow();
+                            icons::set_button_icon(
+                                &pane.btn_dnd,
+                                "bell",
+                                &theme.text_secondary,
+                                16,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Supervised dbus-monitor with kernel PR_SET_PDEATHSIG + auto-restart backoff
     fn spawn_dbus_monitor(tx: async_channel::Sender<NotificationItem>) {
         thread::spawn(move || {
             let parent_pid = std::process::id() as libc::pid_t;

@@ -14,7 +14,7 @@ use std::rc::Rc;
 pub struct PluginEntry {
     pub manifest: PluginManifest,
     pub plugin: Box<dyn SidebarPlugin>,
-    pub container: ScrolledWindow,
+    pub container: Option<ScrolledWindow>,
 }
 
 pub struct PluginRegistry {
@@ -49,12 +49,23 @@ impl PluginRegistry {
             return;
         }
         let manages_scroll = plugin.manages_own_scroll();
-        let widget = plugin.build_widget(ctx);
+        let build_res =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.build_widget(ctx)));
+        let widget = match build_res {
+            Ok(w) => w,
+            Err(_) => {
+                eprintln!(
+                    "[nevermore-plugin] error: plugin '{}' panicked during build_widget, skipping registration",
+                    manifest.id
+                );
+                return;
+            }
+        };
         let container = wrap_in_plugin_container(&widget, manages_scroll);
         self.entries.push(PluginEntry {
             manifest,
             plugin,
-            container,
+            container: Some(container),
         });
     }
 
@@ -64,11 +75,10 @@ impl PluginRegistry {
         if self.entries.iter().any(|e| e.manifest.id == manifest.id) {
             return;
         }
-        let container = ScrolledWindow::new();
         self.entries.push(PluginEntry {
             manifest,
             plugin,
-            container,
+            container: None,
         });
     }
 
@@ -82,7 +92,9 @@ impl PluginRegistry {
 
     pub fn attach_to_stack(&self, stack: &Stack) {
         for entry in &self.entries {
-            stack.add_named(&entry.container, Some(&entry.manifest.id));
+            if let Some(ref container) = entry.container {
+                stack.add_named(container, Some(&entry.manifest.id));
+            }
         }
     }
 
@@ -281,8 +293,6 @@ mod tests {
 
     #[test]
     fn test_sync_lifecycle_state_machine() {
-        let _ = gtk4::init();
-
         let w_show = Rc::new(RefCell::new(0));
         let w_hide = Rc::new(RefCell::new(0));
         let t_show = Rc::new(RefCell::new(0));

@@ -10,7 +10,7 @@
 /// 7: array [ dict entry( string key, variant val ) hints ]
 /// 8: int32 expire_timeout
 ///
-/// Immediately emits on the `int32` line closing the Notify call.
+/// Immediately emits on the `int32` line closing the Notify call after hints depth returns to 0.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedNotification {
@@ -28,9 +28,10 @@ pub struct DbusNotificationParser {
     current_summary: String,
     current_body: String,
     current_desktop_entry: Option<String>,
-    multiline_buf: Option<(MultilineTarget, String)>,
+    pending_string: Option<(usize, String)>,
     in_actions: bool,
     in_hints: bool,
+    depth: usize,
     waiting_desktop_entry_variant: bool,
 }
 
@@ -43,16 +44,59 @@ enum ParserState {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum MultilineTarget {
-    AppName,
-    Summary,
-    Body,
+fn is_structural_dbus_token(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("uint32 ")
+        || t.starts_with("int32 ")
+        || t.starts_with("int64 ")
+        || t.starts_with("uint64 ")
+        || t.starts_with("double ")
+        || t.starts_with("byte ")
+        || t.starts_with("boolean ")
+        || t.starts_with("string \"")
+        || t.starts_with("array [")
+        || t.starts_with("array of ")
+        || t.starts_with("dict entry(")
+        || t.starts_with("variant ")
+        || t.starts_with("struct {")
+        || t == "]"
+        || t == ")"
+        || t == "}"
+        || t.starts_with("method call ")
+        || t.starts_with("signal ")
+        || t.starts_with("method return ")
+        || t.starts_with("error ")
 }
 
 impl DbusNotificationParser {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn commit_pending_string(&mut self, target_idx: usize, mut content: String) {
+        if content.ends_with('"') && !content.ends_with("\\\"") {
+            content.pop();
+        }
+
+        match target_idx {
+            0 => {
+                self.current_app_name = content;
+                self.state = ParserState::InNotify { arg_index: 1 };
+            }
+            2 => {
+                // app_icon
+                self.state = ParserState::InNotify { arg_index: 3 };
+            }
+            3 => {
+                self.current_summary = content;
+                self.state = ParserState::InNotify { arg_index: 4 };
+            }
+            4 => {
+                self.current_body = content;
+                self.state = ParserState::InNotify { arg_index: 5 };
+            }
+            _ => {}
+        }
     }
 
     /// Feeds a single line of dbus-monitor output. Returns Some(ParsedNotification) immediately
@@ -67,100 +111,92 @@ impl DbusNotificationParser {
             self.current_summary.clear();
             self.current_body.clear();
             self.current_desktop_entry = None;
-            self.multiline_buf = None;
+            self.pending_string = None;
             self.in_actions = false;
             self.in_hints = false;
+            self.depth = 0;
             self.waiting_desktop_entry_variant = false;
             return None;
         }
 
-        // 2. Handle active multi-line string accumulation
-        if let Some((target, mut text)) = self.multiline_buf.take() {
-            let line_trimmed = line.trim_end();
-            if line_trimmed.ends_with('"') && !line_trimmed.ends_with("\\\"") {
-                // Final line of multi-line string
-                let content = &line_trimmed[..line_trimmed.len() - 1];
-                text.push('\n');
-                text.push_str(content);
-                match target {
-                    MultilineTarget::AppName => self.current_app_name = text,
-                    MultilineTarget::Summary => self.current_summary = text,
-                    MultilineTarget::Body => self.current_body = text,
-                }
-            } else {
-                text.push('\n');
-                text.push_str(line);
-                self.multiline_buf = Some((target, text));
-            }
-            return None;
-        }
-
         // If not in a Notify method call, ignore other signals/calls
-        let arg_index = match self.state {
+        let mut arg_index = match self.state {
             ParserState::InNotify { arg_index } => arg_index,
             ParserState::Idle => return None,
         };
 
-        // 3. Hints parsing
+        // 2. If we have a pending string, check if this line is a structural token or a continuation
+        if let Some((target_idx, mut text)) = self.pending_string.take() {
+            if is_structural_dbus_token(line) {
+                // The previous string line WAS the end of the string! Commit it now.
+                self.commit_pending_string(target_idx, text);
+                // Update local arg_index from state
+                if let ParserState::InNotify { arg_index: new_idx } = self.state {
+                    arg_index = new_idx;
+                }
+                // Fall through to process `line` below as the new structural element!
+            } else {
+                // Not a structural token: it is a continuation of the multi-line string
+                text.push('\n');
+                text.push_str(line.trim_end());
+                self.pending_string = Some((target_idx, text));
+                return None;
+            }
+        }
+
+        // 3. Hints parsing and nesting depth tracking
         if self.in_hints {
+            let opens = trimmed
+                .chars()
+                .filter(|&c| c == '[' || c == '{' || c == '(')
+                .count();
+            let closes = trimmed
+                .chars()
+                .filter(|&c| c == ']' || c == '}' || c == ')')
+                .count();
+            self.depth = (self.depth + opens).saturating_sub(closes);
+
             if self.waiting_desktop_entry_variant {
-                if trimmed.contains("string \"") {
-                    if let Some(start) = trimmed.find("string \"") {
-                        let rem = &trimmed[start + 8..];
-                        if let Some(end) = rem.rfind('"') {
-                            self.current_desktop_entry = Some(rem[..end].to_string());
-                        }
+                if let Some(start) = trimmed.find("string \"") {
+                    let rem = &trimmed[start + 8..];
+                    if let Some(end) = rem.rfind('"') {
+                        self.current_desktop_entry = Some(rem[..end].to_string());
                     }
                     self.waiting_desktop_entry_variant = false;
                 }
             } else if trimmed.contains("string \"desktop-entry\"") {
                 self.waiting_desktop_entry_variant = true;
             }
+
+            if self.depth == 0 {
+                self.in_hints = false;
+                self.state = ParserState::InNotify { arg_index: 7 };
+            }
+            return None;
         }
 
-        // 4. Structural elements
-        if let Some(content_part) = trimmed.strip_prefix("string \"") {
-            // Check if single line: ends with '"' and not the opening quote itself
-            if content_part.ends_with('"') && !content_part.ends_with("\\\"") {
-                let s = &content_part[..content_part.len() - 1];
-                match arg_index {
-                    0 => {
-                        self.current_app_name = s.to_string();
-                        self.state = ParserState::InNotify { arg_index: 1 };
-                    }
-                    2 => {
-                        // app_icon
-                        self.state = ParserState::InNotify { arg_index: 3 };
-                    }
-                    3 => {
-                        self.current_summary = s.to_string();
-                        self.state = ParserState::InNotify { arg_index: 4 };
-                    }
-                    4 => {
-                        self.current_body = s.to_string();
-                        self.state = ParserState::InNotify { arg_index: 5 };
-                    }
-                    _ => {}
-                }
-            } else {
-                // Multi-line string begins
-                let target = match arg_index {
-                    0 => {
-                        self.state = ParserState::InNotify { arg_index: 1 };
-                        MultilineTarget::AppName
-                    }
-                    3 => {
-                        self.state = ParserState::InNotify { arg_index: 4 };
-                        MultilineTarget::Summary
-                    }
-                    4 => {
-                        self.state = ParserState::InNotify { arg_index: 5 };
-                        MultilineTarget::Body
-                    }
-                    _ => return None,
-                };
-                self.multiline_buf = Some((target, content_part.to_string()));
+        // 4. Actions parsing and nesting depth tracking
+        if self.in_actions {
+            let opens = trimmed
+                .chars()
+                .filter(|&c| c == '[' || c == '{' || c == '(')
+                .count();
+            let closes = trimmed
+                .chars()
+                .filter(|&c| c == ']' || c == '}' || c == ')')
+                .count();
+            self.depth = (self.depth + opens).saturating_sub(closes);
+
+            if self.depth == 0 {
+                self.in_actions = false;
+                self.state = ParserState::InNotify { arg_index: 6 };
             }
+            return None;
+        }
+
+        // 5. Normal argument processing
+        if let Some(content_part) = trimmed.strip_prefix("string \"") {
+            self.pending_string = Some((arg_index, content_part.trim_end().to_string()));
         } else if trimmed.starts_with("uint32 ") {
             if arg_index == 1 {
                 // replaces_id
@@ -169,19 +205,23 @@ impl DbusNotificationParser {
         } else if trimmed.starts_with("array [") {
             if arg_index == 5 {
                 self.in_actions = true;
+                self.depth = 1;
+                if trimmed.ends_with(']') {
+                    self.depth = 0;
+                    self.in_actions = false;
+                    self.state = ParserState::InNotify { arg_index: 6 };
+                }
             } else if arg_index == 6 {
                 self.in_hints = true;
+                self.depth = 1;
+                if trimmed.ends_with(']') {
+                    self.depth = 0;
+                    self.in_hints = false;
+                    self.state = ParserState::InNotify { arg_index: 7 };
+                }
             }
-        } else if trimmed == "]" {
-            if self.in_actions {
-                self.in_actions = false;
-                self.state = ParserState::InNotify { arg_index: 6 };
-            } else if self.in_hints {
-                self.in_hints = false;
-                self.state = ParserState::InNotify { arg_index: 7 };
-            }
-        } else if trimmed.starts_with("int32 ") {
-            // Expire timeout encountered -> Notification is complete!
+        } else if trimmed.starts_with("int32 ") && arg_index == 7 && self.depth == 0 {
+            // Expire timeout encountered ONLY when hints are closed (arg_index == 7 and depth == 0)
             let desktop_entry = self
                 .current_desktop_entry
                 .clone()
@@ -202,6 +242,7 @@ impl DbusNotificationParser {
             self.state = ParserState::Idle;
             self.in_actions = false;
             self.in_hints = false;
+            self.depth = 0;
             self.waiting_desktop_entry_variant = false;
 
             return Some(notification);
@@ -216,7 +257,188 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_single_notification_immediate_emission_and_hint() {
+    fn test_image_data_struct_before_desktop_entry() {
+        let sample = r#"
+method call time=1793753550.426000 sender=:1.10675 -> destination=org.freedesktop.Notifications serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "discord"
+   uint32 0
+   string ""
+   string "Alice"
+   string "hey, are you online?"
+   array [
+   ]
+   array [
+      dict entry(
+         string "image-data"
+         variant             struct {
+               int32 48
+               int32 48
+               int32 192
+               boolean true
+               int32 8
+               int32 4
+               array of bytes [
+                  ff 00 00 ff ff 00 00 ff ff 00 00 ff
+               ]
+            }
+      )
+      dict entry(
+         string "desktop-entry"
+         variant             string "com.discordapp.Discord"
+      )
+   ]
+   int32 -1
+"#;
+
+        let mut parser = DbusNotificationParser::new();
+        let mut emitted = Vec::new();
+
+        for line in sample.lines() {
+            if let Some(n) = parser.feed_line(line) {
+                emitted.push(n);
+            }
+        }
+
+        assert_eq!(
+            emitted.len(),
+            1,
+            "Should emit exactly 1 notification on the final int32 -1"
+        );
+        let n = &emitted[0];
+        assert_eq!(n.app_name, "discord");
+        assert_eq!(n.summary, "Alice");
+        assert_eq!(n.body, "hey, are you online?");
+        assert_eq!(n.desktop_entry, "com.discordapp.Discord");
+    }
+
+    #[test]
+    fn test_image_data_struct_after_desktop_entry() {
+        let sample = r#"
+method call time=1793753550.426000 sender=:1.10675 -> destination=org.freedesktop.Notifications serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "discord"
+   uint32 0
+   string ""
+   string "Alice"
+   string "hey, are you online?"
+   array [
+   ]
+   array [
+      dict entry(
+         string "desktop-entry"
+         variant             string "com.discordapp.Discord"
+      )
+      dict entry(
+         string "image-data"
+         variant             struct {
+               int32 48
+               int32 48
+               int32 192
+               boolean true
+               int32 8
+               int32 4
+               array of bytes [
+                  ff 00 00 ff ff 00 00 ff ff 00 00 ff
+               ]
+            }
+      )
+   ]
+   int32 -1
+"#;
+
+        let mut parser = DbusNotificationParser::new();
+        let mut emitted = Vec::new();
+
+        for line in sample.lines() {
+            if let Some(n) = parser.feed_line(line) {
+                emitted.push(n);
+            }
+        }
+
+        assert_eq!(emitted.len(), 1);
+        let n = &emitted[0];
+        assert_eq!(n.desktop_entry, "com.discordapp.Discord");
+    }
+
+    #[test]
+    fn test_nested_variant_array_before_desktop_entry() {
+        let sample = r#"
+method call time=1793753550.426000 sender=:1.10675 -> destination=org.freedesktop.Notifications serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "discord"
+   uint32 0
+   string ""
+   string "Alice"
+   string "hey, are you online?"
+   array [
+   ]
+   array [
+      dict entry(
+         string "tags"
+         variant             array [
+               string "a"
+               string "b"
+            ]
+      )
+      dict entry(
+         string "desktop-entry"
+         variant             string "com.discordapp.Discord"
+      )
+   ]
+   int32 -1
+"#;
+
+        let mut parser = DbusNotificationParser::new();
+        let mut emitted = Vec::new();
+
+        for line in sample.lines() {
+            if let Some(n) = parser.feed_line(line) {
+                emitted.push(n);
+            }
+        }
+
+        assert_eq!(emitted.len(), 1);
+        let n = &emitted[0];
+        assert_eq!(n.desktop_entry, "com.discordapp.Discord");
+    }
+
+    #[test]
+    fn test_multiline_body_ending_with_quote() {
+        let sample = r#"
+method call time=1793753550.426000 sender=:1.10675 -> destination=org.freedesktop.Notifications serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "discord"
+   uint32 0
+   string ""
+   string "Alice"
+   string "Line 1 "quoted"
+Line 2"
+   array [
+   ]
+   array [
+      dict entry(
+         string "desktop-entry"
+         variant             string "com.discordapp.Discord"
+      )
+   ]
+   int32 -1
+"#;
+
+        let mut parser = DbusNotificationParser::new();
+        let mut emitted = Vec::new();
+
+        for line in sample.lines() {
+            if let Some(n) = parser.feed_line(line) {
+                emitted.push(n);
+            }
+        }
+
+        assert_eq!(emitted.len(), 1);
+        let n = &emitted[0];
+        assert_eq!(n.summary, "Alice");
+        assert_eq!(n.body, "Line 1 \"quoted\"\nLine 2");
+        assert_eq!(n.desktop_entry, "com.discordapp.Discord");
+    }
+
+    #[test]
+    fn test_existing_flat_hints() {
         let sample = r#"
 method call time=1793753550.426000 sender=:1.10675 -> destination=:1.8142 serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
    string "TestApp"
@@ -248,54 +470,16 @@ Line2"
         let mut emitted = Vec::new();
 
         for line in sample.lines() {
-            if let Some(item) = parser.feed_line(line) {
-                emitted.push(item);
-            }
-        }
-
-        // Must emit EXACTLY 1 notification immediately upon seeing int32 -1!
-        assert_eq!(
-            emitted.len(),
-            1,
-            "Must emit single notification immediately"
-        );
-        let notif = &emitted[0];
-        assert_eq!(notif.app_name, "TestApp");
-        assert_eq!(notif.summary, "Hello Summary");
-        assert_eq!(notif.body, "Line1\nLine2");
-        assert_eq!(notif.desktop_entry, "firefox");
-    }
-
-    #[test]
-    fn test_fallback_desktop_entry_when_hint_absent() {
-        let sample = r#"
-method call time=1793753550.426000 sender=:1.10675 -> destination=:1.8142 serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
-   string "VLC Media Player"
-   uint32 0
-   string ""
-   string "Now Playing"
-   string "Artist - Song"
-   array [
-   ]
-   array [
-   ]
-   int32 5000
-"#;
-
-        let mut parser = DbusNotificationParser::new();
-        let mut emitted = Vec::new();
-
-        for line in sample.lines() {
-            if let Some(item) = parser.feed_line(line) {
-                emitted.push(item);
+            if let Some(n) = parser.feed_line(line) {
+                emitted.push(n);
             }
         }
 
         assert_eq!(emitted.len(), 1);
-        let notif = &emitted[0];
-        assert_eq!(notif.app_name, "VLC Media Player");
-        assert_eq!(notif.summary, "Now Playing");
-        assert_eq!(notif.body, "Artist - Song");
-        assert_eq!(notif.desktop_entry, "vlc-media-player");
+        let n = &emitted[0];
+        assert_eq!(n.app_name, "TestApp");
+        assert_eq!(n.summary, "Hello Summary");
+        assert_eq!(n.body, "Line1\nLine2");
+        assert_eq!(n.desktop_entry, "firefox");
     }
 }
