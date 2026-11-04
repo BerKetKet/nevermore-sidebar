@@ -3,14 +3,18 @@
 This document tracks all external crate and system dependencies for the Nevermore Wayland sidebar workspace.
 
 ## System Dependencies (Arch / CachyOS Linux)
-- `gtk4` (>= 4.14)
-- `gtk4-layer-shell` (>= 0.8)
-- `vte4` (>= 0.76)
-- `tmux` (>= 3.3)
-- `playerctl` (for MPRIS media control)
-- `wireplumber` / `wpctl` (for PipeWire audio control)
+- `gtk4` (>= 4.14, installed `4.18.5`)
+- `gtk4-layer-shell` (>= 0.8, installed `0.8.2`)
+- `vte4` (>= 0.76, installed `0.84.1`)
+- `tmux` (>= 3.3, installed `3.5a`)
+- `mpv` (installed `0.41.0-7.1`, Intel Iris Plus 655 VA-API hardware decode)
+- `yt-dlp` (installed `2026.10.26-1`, video search & stream extraction)
+- `cloudflare-warp-bin` (installed `2026.8.2115-1`, `warp-cli` VPN integration)
+- `networkmanager` (installed `1.58.1-3`, `nmcli` WireGuard profiles)
+- `libsecret` (installed `0.21.8.2-1.1`, `secret-tool` Secret Service keyring integration)
+- `intel-media-driver` (installed `26.3.5-1.1`, VA-API hardware decoding backend)
 - `libnotify` / `notify-send` (desktop notifications)
-- `spectacle` / `grim` / `slurp` (screenshot validation)
+- `spectacle` (KDE Plasma screenshot validation)
 
 ## Cargo Workspace Crate Dependencies (Exact Pinned Versions)
 

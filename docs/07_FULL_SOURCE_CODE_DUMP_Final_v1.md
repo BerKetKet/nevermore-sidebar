@@ -46,14 +46,18 @@ libc = { version = "=0.2.191" }
 This document tracks all external crate and system dependencies for the Nevermore Wayland sidebar workspace.
 
 ## System Dependencies (Arch / CachyOS Linux)
-- `gtk4` (>= 4.14)
-- `gtk4-layer-shell` (>= 0.8)
-- `vte4` (>= 0.76)
-- `tmux` (>= 3.3)
-- `playerctl` (for MPRIS media control)
-- `wireplumber` / `wpctl` (for PipeWire audio control)
+- `gtk4` (>= 4.14, installed `4.18.5`)
+- `gtk4-layer-shell` (>= 0.8, installed `0.8.2`)
+- `vte4` (>= 0.76, installed `0.84.1`)
+- `tmux` (>= 3.3, installed `3.5a`)
+- `mpv` (installed `0.41.0-7.1`, Intel Iris Plus 655 VA-API hardware decode)
+- `yt-dlp` (installed `2026.10.26-1`, video search & stream extraction)
+- `cloudflare-warp-bin` (installed `2026.8.2115-1`, `warp-cli` VPN integration)
+- `networkmanager` (installed `1.58.1-3`, `nmcli` WireGuard profiles)
+- `libsecret` (installed `0.21.8.2-1.1`, `secret-tool` Secret Service keyring integration)
+- `intel-media-driver` (installed `26.3.5-1.1`, VA-API hardware decoding backend)
 - `libnotify` / `notify-send` (desktop notifications)
-- `spectacle` / `grim` / `slurp` (screenshot validation)
+- `spectacle` (KDE Plasma screenshot validation)
 
 ## Cargo Workspace Crate Dependencies (Exact Pinned Versions)
 
@@ -955,6 +959,53 @@ All entries must record the exact command run, timestamp, stdout/stderr, measure
 | 2026-11-04 13:13 | Phase 10: Performance Soak & Resource Bounding | `nevermore show/hide`, `pidstat`, `ps -o rss`, `ls /proc/$PID/fd` | Warm show latency: 39 ms (<= 100 ms). Warm hide latency: 84 ms (<= 100 ms). Hidden idle CPU: 0.0–0.2% over 30s. Resident memory (RSS): 129 MB across all 9 tabs. Open file descriptors: 73 FDs bounded. | VERIFIED |
 | 2026-11-04 13:14 | Phase 10: Toast-Free Visual Proof & Contrast Pass | Protocol 0.2 (`notify-send` -> DND Inhibit -> `spectacle` -> DND release) | Captured `docs/spikes/08-tab-media.png`, `08-tab-gemini.png`, `08-tab-youtube.png`, `09-tab-vpn.png`, `11-tab-email.png` with 0 toast overlays. Verified 400px width lock (`x = 1520..1920`) and WCAG 2.1 contrast >= 3.0:1 on all tabs via `scripts/verify_icon_contrast.py`. | VERIFIED |
 | 2026-11-04 13:15 | Phase 10: Documentation & Release Bundle | `README.md`, `docs/USER_GUIDE.md`, `docs/07_FULL_SOURCE_CODE_DUMP_Final_v1.md` | Authored comprehensive project README, complete user guide with CLI reference and tab workflows, and generated full source code dump. | VERIFIED |
+```
+
+---
+
+## File: `docs/NEVERMORE_COMM_LOG_v11_MANAGER.md`
+
+```markdown
+# [MANAGER AI DIRECTIVE — `v11_MANAGER`]: PHASES 8–11 APPROVED, FINAL RELEASE POLISH, LIVE SERVICE DEPLOYMENT, & IDLE STANDBY
+
+**From:** Manager AI (Google AI Studio)  
+**To:** Worker AI (Antigravity) & User (`bgg`)  
+**Audited Code Commit on `main`:** `86a19ed`  
+**Audited Docs Commit on `main`:** `06db684`  
+**Communication Channel:** Google AI Studio DevTools Bridge Daemon  
+
+---
+
+## 1. FORMAL APPROVAL OF PHASES 8, 9, 11, AND 10
+
+Phases 8, 9, 11, and 10 (`86a19ed` / `06db684`) are **APPROVED**.
+All requirements from `v09_MANAGER` were fulfilled:
+- Zero-Context Plugin SDK used across all 9 plugins.
+- Headless plugin contract tests passing 5/5 in 0.00s.
+- 41/41 workspace tests passing, clippy clean, fmt clean.
+- Crash survival soak test passed with < 2s restart, 0 defuncts, tmux persistence.
+- Sub-100ms show/hide transitions (39ms show / 84ms hide).
+- Hidden idle CPU 0.0–0.2%.
+- 100% WCAG 2.1 contrast compliance and 400px width lock across all tabs.
+
+---
+
+## 2. PHASE 10.1 FINAL RELEASE POLISH TASKS
+
+Before entering final idle standby for `bgg`'s return, execute this 3-step Phase 10.1 Final Release Polish on `main` and then stop all automated tasks:
+
+1. **Strict `=` Pin on `async-channel` (`crates/nevermore-ui/Cargo.toml`):**
+   - Change `async-channel = "2.5.0"` to `async-channel = "=2.5.0"`.
+   - Update System Dependencies in `DEPENDENCIES.md` to list `mpv`, `yt-dlp`, `cloudflare-warp-bin`, `networkmanager`, and `libsecret` with installed versions.
+2. **Deploy Fresh Release Binary to Live `nevermore.service` Daemon:**
+   - Run `cargo build --release --workspace --locked` and `cargo test --workspace --locked` (plus `DISPLAY="" WAYLAND_DISPLAY="" cargo test -p nevermore-ui --test plugin_contract`).
+   - Ensure `~/.config/systemd/user/nevermore.service` (and `/home/bgg/.local/bin/nevermore` + `/home/bgg/.local/bin/nevermore-ui` if installed there) points to and runs the newly built Phase 8–11 release binaries.
+   - Run `systemctl --user daemon-reload && systemctl --user restart nevermore.service`.
+   - Reset active theme to `nevermore-dark` (`nevermore theme set nevermore-dark` and `nevermore hide`).
+3. **Sync Final Artifacts to GitHub & Google Drive, Then Enter Standby:**
+   - Commit the `Cargo.toml` / `DEPENDENCIES.md` polish to `main`, regenerate `docs/07_FULL_SOURCE_CODE_DUMP_Final_v1.md`, push to `origin/main`.
+   - Verify all release artifacts and logs are synced to Google Drive (`Nevermore QC & AI Consultations / 2026-11-04_Phases-8-to-11_Complete`).
+   - **ENTER FINAL STANDBY:** Once deployed and pushed, do not run any further UI tests or background tasks. Wait for `bgg`.
 ```
 
 ---

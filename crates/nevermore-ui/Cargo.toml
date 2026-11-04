@@ -22,5 +22,5 @@ gtk4-layer-shell = { version = "=0.8.1", features = ["v1_3"] }
 vte4 = { version = "=0.10.0", features = ["v0_84"] }
 glib = { version = "=0.22.10" }
 gio = { version = "=0.22.10" }
-async-channel = "2.5.0"
+async-channel = "=2.5.0"
 libc = { workspace = true }
