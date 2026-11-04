@@ -75,7 +75,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                             .arg("--vo=gpu")
                             .arg("--ytdl-format=bestvideo[height<=1080]+bestaudio/best")
                             .arg(&url);
-                        let _ = cmd.execute_blocking();
+                        let _ = cmd.spawn_detached();
                     });
 
                     let display_title = if item.title.len() > 42 {

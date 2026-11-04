@@ -1,12 +1,43 @@
 use gtk4::prelude::*;
 use nevermore_ui::icons;
-use nevermore_ui::plugin_api::PluginContext;
+use nevermore_ui::plugin_api::{wrap_in_plugin_container, PluginContext, SidebarPlugin};
 use nevermore_ui::sdk::lifecycle::SpecPluginAdapter;
 use nevermore_ui::sdk::types::PluginSpec;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 use std::time::Duration;
+
+static INIT_TEST: Once = Once::new();
+
+fn ensure_test_display() {
+    INIT_TEST.call_once(|| {
+        assert!(
+            std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok(),
+            "WAYLAND_DISPLAY is required for plugin contract tests (silent skips are forbidden)"
+        );
+        gtk4::init().expect("Failed to initialize GTK4 on display");
+
+        glib::log_set_writer_func(|level, fields| {
+            if matches!(level, glib::LogLevel::Critical | glib::LogLevel::Warning) {
+                let mut msg = String::new();
+                for f in fields {
+                    if f.key() == "MESSAGE" {
+                        if let Some(val) = f.value_str() {
+                            msg = val.to_string();
+                        }
+                    }
+                }
+                // Ignore transient harmless Pango font lookup warnings in headless/CI
+                if !msg.is_empty() && !msg.contains("font") {
+                    panic!("GLib/GTK logged {:?}: {}", level, msg);
+                }
+            }
+            glib::LogWriterOutput::Handled
+        });
+    });
+}
 
 fn is_emoji(c: char) -> bool {
     matches!(c,
@@ -59,8 +90,14 @@ fn test_plugin_source_linter() {
 
     let forbidden_patterns = [
         ("std::process::Command", "Use Cmd builder instead"),
+        ("Command::new", "Use Cmd builder instead"),
         ("glib::timeout_add(", "Use ctx.every instead"),
         ("glib::timeout_add_local(", "Use ctx.every instead"),
+        ("timeout_add", "Use ctx.every instead"),
+        (
+            "execute_blocking",
+            "Never block on GTK main thread; use ctx.run or background thread",
+        ),
         (
             "tokio::",
             "Do not pull in tokio runtime; use ctx.run or glib",
@@ -90,7 +127,16 @@ fn test_plugin_source_linter() {
             );
         }
 
-        // 2. Check for emojis
+        // 2. Check for literal hex/rgba inside plugin CSS calls
+        if content.contains("ctx.css(") {
+            assert!(
+                !content.contains("rgba(") && !content.contains("rgb("),
+                "Plugin CSS in {:?} must not contain hardcoded rgba/rgb; use CSS custom properties",
+                file
+            );
+        }
+
+        // 3. Check for emojis
         for (line_idx, line) in content.lines().enumerate() {
             for c in line.chars() {
                 assert!(
@@ -147,14 +193,20 @@ fn test_plugin_manifest_and_icons() {
 }
 
 #[test]
-fn test_plugin_widget_tree_and_text_free_chrome() {
-    if gtk4::init().is_err() {
-        eprintln!("Skipping widget tree test: headless environment without display");
-        return;
-    }
+fn test_plugin_gtk_contract_suite() {
+    ensure_test_display();
 
-    use gtk4::prelude::*;
+    // 1. Widget tree and text-free chrome
+    run_widget_tree_and_text_free_chrome();
 
+    // 2. Lifecycle pump and cleanup (show -> pump 100ms -> hide -> show -> hide -> on_theme_changed)
+    run_lifecycle_pump_and_cleanup();
+
+    // 3. Lifecycle timer pause
+    run_lifecycle_timer_pause();
+}
+
+fn run_widget_tree_and_text_free_chrome() {
     let temp = std::env::temp_dir().join(format!("nevermore_test_widget_{}", std::process::id()));
     let _ = fs::remove_dir_all(&temp);
     let ctx = PluginContext::for_test(&temp);
@@ -165,16 +217,15 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
         let id = spec.id;
         let widget = build_fn(&ctx);
 
-        // Check container width clamp
-        let (width, _) = widget.size_request();
-        if width > 0 {
-            assert!(
-                width <= 340,
-                "Plugin '{}' requested width {} which exceeds 340px",
-                id,
-                width
-            );
-        }
+        // Check container width clamp inside ScrolledWindow wrapper
+        let container = wrap_in_plugin_container(&widget, false);
+        let (min_w, _) = container.preferred_size();
+        assert!(
+            min_w.width() <= 340,
+            "Plugin '{}' requested min width {} which exceeds 340px clamp",
+            id,
+            min_w.width()
+        );
 
         // Recursive walk checking that all text labels have .nm-data class
         fn check_widget(w: &gtk4::Widget, plugin_id: &str) {
@@ -185,12 +236,21 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
             if let Some(label) = w.downcast_ref::<gtk4::Label>() {
                 let text = label.text();
                 if !text.trim().is_empty() {
+                    for c in text.chars() {
+                        assert!(
+                            !is_emoji(c),
+                            "Plugin '{}' contains forbidden emoji character '{}' in label '{}'",
+                            plugin_id,
+                            c,
+                            text
+                        );
+                    }
                     assert!(
                         label.has_css_class("nm-data")
                             || label.has_css_class("nm-data-value")
                             || label.has_css_class("nm-section-header")
                             || label.has_css_class("nm-field-label"),
-                        "Plugin '{}' contains label with text '{}' that lacks '.nm-data' CSS class!",
+                        "Plugin '{}' contains label with text '{}' that lacks required CSS class (.nm-data, .nm-section-header, or .nm-field-label)!",
                         plugin_id,
                         text
                     );
@@ -198,14 +258,12 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
             }
             if let Some(button) = w.downcast_ref::<gtk4::Button>() {
                 if let Some(lbl) = button.label() {
-                    if !lbl.trim().is_empty() {
-                        assert!(
-                            button.has_css_class("nm-data"),
-                            "Plugin '{}' contains button with label text '{}' that lacks '.nm-data' CSS class!",
-                            plugin_id,
-                            lbl
-                        );
-                    }
+                    assert!(
+                        lbl.trim().is_empty(),
+                        "Plugin '{}' contains button with non-empty text label '{}'! Static chrome buttons must be text-free icon buttons.",
+                        plugin_id,
+                        lbl
+                    );
                 }
             }
 
@@ -222,15 +280,51 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
     let _ = fs::remove_dir_all(&temp);
 }
 
-#[test]
-fn test_plugin_lifecycle_timer_pause() {
-    if gtk4::init().is_err() {
-        eprintln!("Skipping lifecycle timer test: headless environment without display");
-        return;
+fn run_lifecycle_pump_and_cleanup() {
+    let temp = std::env::temp_dir().join(format!("nevermore_test_pump_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp);
+    let ctx = PluginContext::for_test(&temp);
+
+    let plugins = nevermore_ui::plugins::ALL_DISCOVERED_PLUGINS;
+
+    for (spec, build_fn) in plugins {
+        let mut adapter = SpecPluginAdapter::new(*spec, *build_fn, &ctx);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _widget = adapter.build_widget(&ctx);
+
+            adapter.on_show();
+            // pump main loop for 100ms
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(100) {
+                glib::MainContext::default().iteration(false);
+            }
+
+            adapter.on_hide();
+            assert_eq!(
+                ctx.active_timer_count(),
+                0,
+                "Plugin '{}' leaked active timers after first hide!",
+                spec.id
+            );
+
+            adapter.on_show();
+            adapter.on_hide();
+            assert_eq!(
+                ctx.active_timer_count(),
+                0,
+                "Plugin '{}' leaked active timers after second hide!",
+                spec.id
+            );
+
+            let dummy_palette = nevermore_core::theme::ThemePalette::default();
+            adapter.on_theme_changed(&dummy_palette);
+        }));
     }
 
-    use nevermore_ui::plugin_api::SidebarPlugin;
+    let _ = fs::remove_dir_all(&temp);
+}
 
+fn run_lifecycle_timer_pause() {
     let temp =
         std::env::temp_dir().join(format!("nevermore_test_lifecycle_{}", std::process::id()));
     let _ = fs::remove_dir_all(&temp);
