@@ -894,6 +894,74 @@ window {{
     font-size: 13px;
 }}
 
+.nm-section-header {{
+    font-size: 11px;
+    font-weight: 700;
+    color: {text_secondary};
+    letter-spacing: 0.5px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}}
+
+.nm-field-label {{
+    font-size: 10px;
+    font-weight: 600;
+    color: {text_secondary};
+    margin-bottom: 2px;
+}}
+
+.nm-data {{
+    font-size: 11px;
+    color: {text_primary};
+}}
+
+.nm-data.nm-prose {{
+    font-size: 11px;
+    color: {text_primary};
+    line-height: 1.4;
+}}
+
+.nm-prompt-entry {{
+    background-color: {bg_tertiary};
+    border: 1px solid {border_color};
+    border-radius: {border_radius_px}px;
+    padding: 4px 8px;
+}}
+
+.nm-prompt-entry entry {{
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: {text_primary};
+    font-size: 11px;
+}}
+
+.nm-search-entry {{
+    background-color: {bg_tertiary};
+    border: 1px solid {border_color};
+    border-radius: {border_radius_px}px;
+    padding: 4px 8px;
+}}
+
+.nm-search-entry entry {{
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    color: {text_primary};
+    font-size: 11px;
+}}
+
+.icon-btn {{
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px;
+}}
+
+.icon-btn:hover {{
+    background-color: {bg_tertiary};
+}}
+
 .nm-muted {{
     color: {text_secondary};
     font-size: 11px;

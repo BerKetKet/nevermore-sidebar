@@ -57,7 +57,25 @@ fn main() {
         ));
     }
 
-    code.push_str("\n#[allow(dead_code, clippy::type_complexity, clippy::vec_init_then_push)]\n");
+    code.push_str("\npub static ALL_DISCOVERED_SPECS: &[crate::sdk::types::PluginSpec] = &[\n");
+    for id in &discovered {
+        let mod_ident = format!("plugin_{}", id.replace('-', "_"));
+        code.push_str(&format!("    {}::SPEC,\n", mod_ident));
+    }
+    code.push_str("];\n\n");
+
+    code.push_str("#[allow(clippy::type_complexity)]\n");
+    code.push_str("pub static ALL_DISCOVERED_PLUGINS: &[(crate::sdk::types::PluginSpec, fn(&crate::plugin_api::PluginContext) -> gtk4::Widget)] = &[\n");
+    for id in &discovered {
+        let mod_ident = format!("plugin_{}", id.replace('-', "_"));
+        code.push_str(&format!(
+            "    ({}::SPEC, {}::build),\n",
+            mod_ident, mod_ident
+        ));
+    }
+    code.push_str("];\n\n");
+
+    code.push_str("#[allow(dead_code, clippy::type_complexity, clippy::vec_init_then_push)]\n");
     code.push_str("pub fn register_discovered_spec_plugins(\n");
     code.push_str("    registry: &mut PluginRegistry,\n");
     code.push_str(
@@ -67,18 +85,42 @@ fn main() {
     code.push_str("    systemd: nevermore_core::SystemdTaskBackend,\n");
     code.push_str("    kwin: nevermore_core::KWinAdapter,\n");
     code.push_str(") {\n");
-    code.push_str("    let mut plugins: Vec<(crate::sdk::types::PluginSpec, fn(&crate::plugin_api::PluginContext) -> gtk4::Widget)> = Vec::new();\n");
-
-    for id in &discovered {
-        let mod_ident = format!("plugin_{}", id.replace('-', "_"));
-        code.push_str(&format!(
-            "    plugins.push(({}::SPEC, {}::build));\n",
-            mod_ident, mod_ident
-        ));
-    }
-
-    code.push_str("    plugins.sort_by_key(|(s, _)| s.order);\n");
+    code.push_str("    let mut plugins: Vec<(crate::sdk::types::PluginSpec, fn(&crate::plugin_api::PluginContext) -> gtk4::Widget)> = ALL_DISCOVERED_PLUGINS.to_vec();\n");
+    code.push_str("    plugins.sort_by(|(a, _), (b, _)| a.order.cmp(&b.order).then_with(|| a.id.cmp(b.id)));\n");
+    code.push_str("    for i in 0..plugins.len() {\n");
+    code.push_str("        for j in (i + 1)..plugins.len() {\n");
+    code.push_str("            if plugins[i].0.id == plugins[j].0.id {\n");
+    code.push_str(
+        "                panic!(\"Duplicate plugin ID detected: '{}'\", plugins[i].0.id);\n",
+    );
+    code.push_str("            }\n");
+    code.push_str("        }\n");
+    code.push_str("    }\n");
+    code.push_str("    let disabled_ids: Vec<String> = {\n");
+    code.push_str("        let cfg_path = nevermore_core::theme::config_file_path();\n");
+    code.push_str("        if cfg_path.exists() {\n");
+    code.push_str("            if let Ok(content) = std::fs::read_to_string(&cfg_path) {\n");
+    code.push_str("                if let Ok(table) = toml::from_str::<toml::Table>(&content) {\n");
+    code.push_str("                    table.get(\"plugins\")\n");
+    code.push_str("                        .and_then(|p| p.get(\"disabled\"))\n");
+    code.push_str("                        .and_then(|d| d.as_array())\n");
+    code.push_str("                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())\n");
+    code.push_str("                        .unwrap_or_default()\n");
+    code.push_str("                } else {\n");
+    code.push_str("                    Vec::new()\n");
+    code.push_str("                }\n");
+    code.push_str("            } else {\n");
+    code.push_str("                Vec::new()\n");
+    code.push_str("            }\n");
+    code.push_str("        } else {\n");
+    code.push_str("            Vec::new()\n");
+    code.push_str("        }\n");
+    code.push_str("    };\n");
     code.push_str("    for (spec, build_fn) in plugins {\n");
+    code.push_str("        if disabled_ids.iter().any(|d| d == spec.id) {\n");
+    code.push_str("            eprintln!(\"[nevermore-plugin] Plugin '{}' is disabled in config.toml, skipping\", spec.id);\n");
+    code.push_str("            continue;\n");
+    code.push_str("        }\n");
     code.push_str("        let ctx = crate::plugin_api::PluginContext::new(\n");
     code.push_str("            spec.id,\n");
     code.push_str("            theme.clone(),\n");

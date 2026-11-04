@@ -28,7 +28,7 @@ pub enum GeminiMsg {
 }
 
 fn get_api_key(ctx: &PluginContext) -> Option<String> {
-    if let Some(key) = ctx.secret_get("gemini_api_key") {
+    if let Some(key) = ctx.secret_get_blocking("gemini_api_key") {
         if !key.trim().is_empty() {
             return Some(key.trim().to_string());
         }
@@ -43,7 +43,7 @@ fn get_api_key(ctx: &PluginContext) -> Option<String> {
 
 pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let api_key = get_api_key(ctx);
-    let history: ChatHistory = ctx.load_json("chat_history").unwrap_or_default();
+    let history: ChatHistory = ctx.load_json("chat_history");
 
     // 1. Status & Header Card
     let status_dot = nm_status_dot(if api_key.is_some() {
@@ -118,7 +118,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let status_for_msg = status_label.clone();
     let ctx_save = ctx.clone();
 
-    let tx = ctx.mailbox(move |msg: GeminiMsg| match msg {
+    let tx = ctx.mailbox(move |msg: GeminiMsg, _tx| match msg {
         GeminiMsg::ReplyReceived { prompt, reply } => {
             status_for_msg.set("READY");
             status_for_msg.set_tone(Tone::Success);
@@ -128,7 +128,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            let mut cur_history: ChatHistory = ctx_save.load_json("chat_history").unwrap_or_default();
+            let mut cur_history: ChatHistory = ctx_save.load_json("chat_history");
             cur_history.turns.push(ChatTurn {
                 role: "user".to_string(),
                 content: prompt,
@@ -198,7 +198,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
         let tx_inner = prompt_tx.clone();
         let prompt_record = q.clone();
-        ctx_run.run(cmd, tx_inner, move |res| {
+        ctx_run.run(cmd, &tx_inner, move |res| {
             if res.code != Some(0) {
                 return GeminiMsg::ErrorOccurred("NETWORK ERROR".to_string());
             }

@@ -253,6 +253,35 @@ pub fn nm_data_label(initial_text: &str) -> DataLabel {
     DataLabel { label }
 }
 
+/// nm_section_header: Section header label with .nm-section-header class.
+pub fn nm_section_header(text: &str) -> Label {
+    let label = Label::new(Some(text));
+    label.add_css_class("nm-section-header");
+    label.set_xalign(0.0);
+    label
+}
+
+/// nm_field_label: Form field label with .nm-field-label class.
+pub fn nm_field_label(text: &str) -> Label {
+    let label = Label::new(Some(text));
+    label.add_css_class("nm-field-label");
+    label.set_xalign(0.0);
+    label
+}
+
+/// nm_prose_label: Selectable multi-line text label with .nm-data.nm-prose class, clamped <= 340px.
+pub fn nm_prose_label(text: &str) -> Label {
+    let label = Label::new(Some(text));
+    label.add_css_class("nm-data");
+    label.add_css_class("nm-prose");
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+    label.set_selectable(true);
+    label.set_xalign(0.0);
+    label.set_max_width_chars(42);
+    label
+}
+
 /// 8. MetricRow & nm_metric_row: Icon + Progress Bar + Value label.
 #[derive(Clone)]
 pub struct MetricRow {
@@ -357,6 +386,10 @@ pub fn nm_list_row(
 
 /// 10. nm_empty_state: Centered dim 32px icon with zero text.
 pub fn nm_empty_state(icon: impl Into<IconSource>, tooltip: &str) -> GtkBox {
+    nm_empty_state_with_tone(icon, Tone::Muted, tooltip)
+}
+
+pub fn nm_empty_state_with_tone(icon: impl Into<IconSource>, tone: Tone, tooltip: &str) -> GtkBox {
     let box_widget = GtkBox::new(Orientation::Vertical, 0);
     box_widget.set_vexpand(true);
     box_widget.set_hexpand(true);
@@ -364,9 +397,63 @@ pub fn nm_empty_state(icon: impl Into<IconSource>, tooltip: &str) -> GtkBox {
     box_widget.set_halign(gtk4::Align::Center);
     box_widget.set_tooltip_text(Some(tooltip));
 
-    let tinted_icon = nm_icon(icon, Tone::Muted, 32);
+    let tinted_icon = nm_icon(icon, tone, 32);
     box_widget.append(tinted_icon.widget());
     box_widget
+}
+
+/// nm_prompt_entry: Prompt input entry that triggers ONLY on Enter (or submit button) and clears itself.
+pub fn nm_prompt_entry(
+    icon: impl Into<IconSource>,
+    placeholder: &str,
+    on_submit: impl Fn(String) + 'static,
+) -> GtkBox {
+    let container = GtkBox::new(Orientation::Horizontal, 6);
+    container.add_css_class("nm-prompt-entry");
+
+    let p_icon = nm_icon(icon, Tone::Secondary, 16);
+    container.append(p_icon.widget());
+
+    let entry = Entry::new();
+    entry.set_hexpand(true);
+    entry.set_placeholder_text(Some(placeholder));
+    entry.set_tooltip_text(Some(placeholder));
+    entry.update_property(&[Property::Label(placeholder)]);
+    container.append(&entry);
+
+    let send_btn = nm_icon_button("send", "Submit");
+    container.append(send_btn.widget());
+
+    let on_sub = Rc::new(on_submit);
+    let entry_weak = entry.downgrade();
+
+    let trigger_submit = {
+        let on_sub = on_sub.clone();
+        let entry_weak = entry_weak.clone();
+        move || {
+            if let Some(e) = entry_weak.upgrade() {
+                let text = e.text().to_string();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    e.set_text("");
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        on_sub(trimmed.to_string());
+                    }));
+                }
+            }
+        }
+    };
+
+    let trigger_clone = trigger_submit.clone();
+    entry.connect_activate(move |_| {
+        trigger_clone();
+    });
+
+    send_btn.on_click(move || {
+        trigger_submit();
+    });
+
+    container
 }
 
 /// 11. nm_search_entry: Tooltip-only search entry with clear button and 200ms debounce.

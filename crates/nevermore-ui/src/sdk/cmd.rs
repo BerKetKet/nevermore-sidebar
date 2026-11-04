@@ -36,8 +36,17 @@ impl Cmd {
 
     pub fn curl(url: &str) -> Self {
         Self::new("curl")
-            .args(["-sSL", "--max-time", "5", url])
-            .timeout(Duration::from_secs(5))
+            .args([
+                "-fsS",
+                "--max-time",
+                "15",
+                "--proto",
+                "=https",
+                "-A",
+                "Nevermore/0.1",
+                url,
+            ])
+            .timeout(Duration::from_secs(15))
     }
 
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
@@ -83,6 +92,12 @@ impl Cmd {
 
         // Put child in its own process group
         command.process_group(0);
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
 
         if self.stdin_bytes.is_some() {
             command.stdin(Stdio::piped());

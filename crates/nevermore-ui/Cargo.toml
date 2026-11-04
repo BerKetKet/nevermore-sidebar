@@ -17,6 +17,7 @@ path = "src/lib.rs"
 nevermore-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 gtk4 = { version = "=0.11.5", features = ["v4_14"] }
 gtk4-layer-shell = { version = "=0.8.1", features = ["v1_3"] }
 vte4 = { version = "=0.10.0", features = ["v0_84"] }

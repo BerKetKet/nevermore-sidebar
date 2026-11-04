@@ -21,9 +21,9 @@ pub const PLUGIN_CONTENT_WIDTH: i32 = 340;
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        && name.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
+        })
 }
 
 /// PluginContext: Safe capability struct passed to each plugin.
@@ -117,14 +117,23 @@ impl PluginContext {
     }
 
     /// Typed Mailbox: connects message handler on the UI thread and returns Tx<Msg>.
-    pub fn mailbox<Msg: Send + 'static>(&self, handler: impl Fn(Msg) + 'static) -> Tx<Msg> {
+    /// Runs sequentially on the main loop. Every message invocation is wrapped in catch_unwind.
+    pub fn mailbox<Msg: Send + 'static>(
+        &self,
+        mut handler: impl FnMut(Msg, &Tx<Msg>) + 'static,
+    ) -> Tx<Msg> {
         let (sender, receiver) = async_channel::unbounded::<Msg>();
+        let tx = Tx::new(sender);
+        let tx_for_handler = tx.clone();
         glib::spawn_future_local(async move {
             while let Ok(msg) = receiver.recv().await {
-                handler(msg);
+                let tx_ref = tx_for_handler.clone();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handler(msg, &tx_ref);
+                }));
             }
         });
-        Tx::new(sender)
+        tx
     }
 
     /// Registers a periodic timer that is paused when the plugin tab is hidden.
@@ -150,9 +159,10 @@ impl PluginContext {
     pub fn run<Msg: Send + 'static>(
         &self,
         cmd: Cmd,
-        tx: Tx<Msg>,
+        tx: &Tx<Msg>,
         map_res: impl FnOnce(CmdResult) -> Msg + Send + 'static,
     ) {
+        let tx = tx.clone();
         std::thread::spawn(move || {
             let res = cmd.execute_blocking();
             tx.send(map_res(res));
@@ -160,10 +170,11 @@ impl PluginContext {
     }
 
     /// Runs a command, streaming its output line-by-line to the mailbox.
+    /// Child process is spawned from the calling thread with PR_SET_PDEATHSIG.
     pub fn stream<Msg: Send + 'static>(
         &self,
         cmd: Cmd,
-        tx: Tx<Msg>,
+        tx: &Tx<Msg>,
         on_line: impl Fn(String) -> Msg + Send + Sync + 'static,
         on_exit: impl FnOnce(Option<i32>) -> Msg + Send + 'static,
     ) {
@@ -177,6 +188,12 @@ impl PluginContext {
             command.env(k, v);
         }
         command.process_group(0);
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
@@ -217,15 +234,17 @@ impl PluginContext {
             }
         });
 
+        let tx_exit = tx.clone();
         std::thread::spawn(move || {
             let _ = h1.join();
             let _ = h2.join();
             let status = child.wait().ok().and_then(|s| s.code());
-            tx.send(on_exit(status));
+            tx_exit.send(on_exit(status));
         });
     }
 
     /// Spawns a long-running daemon command tracked by the lifecycle.
+    /// Spawned from the calling thread with PR_SET_PDEATHSIG.
     pub fn daemon(&self, cmd: Cmd, keep_on_hide: KeepOnHide) {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
@@ -236,6 +255,12 @@ impl PluginContext {
             command.env(k, v);
         }
         command.process_group(0);
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
         command.stdout(Stdio::null());
         command.stderr(Stdio::null());
 
@@ -248,24 +273,24 @@ impl PluginContext {
     }
 
     /// Loads JSON data from plugin data directory with corruption recovery.
-    pub fn load_json<T: serde::de::DeserializeOwned>(&self, name: &str) -> Option<T> {
+    pub fn load_json<T: Default + serde::de::DeserializeOwned>(&self, name: &str) -> T {
         if !is_valid_name(name) {
             eprintln!("[nevermore-plugin] invalid json storage name: '{}'", name);
-            return None;
+            return T::default();
         }
         let path = self.data_dir.join(format!("{}.json", name));
         if !path.exists() {
-            return None;
+            return T::default();
         }
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[nevermore-plugin] error reading {:?}: {}", path, e);
-                return None;
+                return T::default();
             }
         };
         match serde_json::from_str::<T>(&content) {
-            Ok(data) => Some(data),
+            Ok(data) => data,
             Err(e) => {
                 eprintln!("[nevermore-plugin] corrupted json in {:?}: {}", path, e);
                 let ts = std::time::SystemTime::now()
@@ -274,12 +299,12 @@ impl PluginContext {
                     .as_secs();
                 let bad_path = self.data_dir.join(format!("{}.bad.{}", name, ts));
                 let _ = fs::rename(&path, &bad_path);
-                None
+                T::default()
             }
         }
     }
 
-    /// Saves JSON data atomically via tempfile + rename.
+    /// Saves JSON data atomically via tempfile + fsync + rename.
     pub fn save_json<T: serde::Serialize>(&self, name: &str, data: &T) -> std::io::Result<()> {
         if !is_valid_name(name) {
             return Err(std::io::Error::new(
@@ -287,21 +312,117 @@ impl PluginContext {
                 format!("Invalid storage name '{}'", name),
             ));
         }
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let json = serde_json::to_string_pretty(data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let target_path = self.data_dir.join(format!("{}.json", name));
         let tmp_path = self
             .data_dir
-            .join(format!(".{}.tmp.{}", name, std::process::id()));
-        fs::write(&tmp_path, json.as_bytes())?;
+            .join(format!(".{}.tmp.{}.{}", name, std::process::id(), seq));
+
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(&tmp_path, &target_path)?;
         Ok(())
     }
 
-    /// Retrieves a secret securely from the system Secret Service.
-    pub fn secret_get(&self, key: &str) -> Option<String> {
+    /// Asynchronously retrieves a secret from Secret Service via secret-tool over stdin.
+    pub fn secret_get<Msg: Send + 'static>(
+        &self,
+        key: &str,
+        tx: &Tx<Msg>,
+        map_res: impl FnOnce(Option<String>) -> Msg + Send + 'static,
+    ) {
+        let plugin_id = self.plugin_id.clone();
+        let key_str = key.to_string();
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let output = std::process::Command::new("secret-tool")
+                .args([
+                    "lookup",
+                    "service",
+                    "nevermore",
+                    "plugin",
+                    &plugin_id,
+                    "key",
+                    &key_str,
+                ])
+                .output()
+                .ok();
+            let val = output.and_then(|out| {
+                if out.status.success() {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !s.is_empty() {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+            tx.send(map_res(val));
+        });
+    }
+
+    /// Asynchronously stores a secret in Secret Service via secret-tool strictly over stdin.
+    pub fn secret_set<Msg: Send + 'static>(
+        &self,
+        key: &str,
+        val: &str,
+        tx: &Tx<Msg>,
+        map_res: impl FnOnce(bool) -> Msg + Send + 'static,
+    ) {
+        let plugin_id = self.plugin_id.clone();
+        let key_str = key.to_string();
+        let val_str = val.to_string();
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let success = match std::process::Command::new("secret-tool")
+                .args([
+                    "store",
+                    &format!("--label=Nevermore {} {}", plugin_id, key_str),
+                    "service",
+                    "nevermore",
+                    "plugin",
+                    &plugin_id,
+                    "key",
+                    &key_str,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(val_str.as_bytes());
+                    }
+                    child.wait().map(|s| s.success()).unwrap_or(false)
+                }
+                Err(_) => false,
+            };
+            tx.send(map_res(success));
+        });
+    }
+
+    /// Synchronous secret lookup helper.
+    pub fn secret_get_blocking(&self, key: &str) -> Option<String> {
         let output = std::process::Command::new("secret-tool")
-            .args(["lookup", "nevermore", &self.plugin_id, "key", key])
+            .args([
+                "lookup",
+                "service",
+                "nevermore",
+                "plugin",
+                &self.plugin_id,
+                "key",
+                key,
+            ])
             .output()
             .ok()?;
         if output.status.success() {
@@ -313,13 +434,16 @@ impl PluginContext {
         None
     }
 
-    /// Stores a secret securely in the system Secret Service.
-    pub fn secret_set(&self, key: &str, val: &str) -> std::io::Result<()> {
+    /// Synchronous secret store helper.
+    pub fn secret_set_blocking(&self, key: &str, val: &str) -> std::io::Result<()> {
+        use std::io::Write;
         let mut child = std::process::Command::new("secret-tool")
             .args([
                 "store",
                 &format!("--label=Nevermore {} {}", self.plugin_id, key),
+                "service",
                 "nevermore",
+                "plugin",
                 &self.plugin_id,
                 "key",
                 key,
@@ -330,7 +454,6 @@ impl PluginContext {
             .spawn()?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
             stdin.write_all(val.as_bytes())?;
         }
 
@@ -342,6 +465,55 @@ impl PluginContext {
                 "secret-tool returned non-zero exit status",
             ))
         }
+    }
+
+    pub fn plugin_config_path(&self) -> PathBuf {
+        if let Some(home) = env::var_os("HOME") {
+            PathBuf::from(home)
+                .join(".config")
+                .join("nevermore")
+                .join("plugins")
+                .join(format!("{}.toml", self.plugin_id))
+        } else {
+            self.config_dir.join(format!("{}.toml", self.plugin_id))
+        }
+    }
+
+    fn read_plugin_toml(&self) -> Option<toml::Table> {
+        let p = self.plugin_config_path();
+        if p.exists() {
+            let s = fs::read_to_string(p).ok()?;
+            toml::from_str::<toml::Table>(&s).ok()
+        } else {
+            None
+        }
+    }
+
+    pub fn setting_str(&self, key: &str) -> Option<String> {
+        self.read_plugin_toml()
+            .and_then(|t| t.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()))
+    }
+
+    pub fn setting_bool(&self, key: &str) -> Option<bool> {
+        self.read_plugin_toml()
+            .and_then(|t| t.get(key).and_then(|v| v.as_bool()))
+    }
+
+    pub fn setting_int(&self, key: &str) -> Option<i64> {
+        self.read_plugin_toml()
+            .and_then(|t| t.get(key).and_then(|v| v.as_integer()))
+    }
+
+    pub fn set_setting(&self, key: &str, val: toml::Value) -> std::io::Result<()> {
+        let p = self.plugin_config_path();
+        if let Some(parent) = p.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let mut table = self.read_plugin_toml().unwrap_or_default();
+        table.insert(key.to_string(), val);
+        let s = toml::to_string_pretty(&table)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        fs::write(p, s)
     }
 
     /// Injects scoped CSS with validation against forbidden literal colors.
@@ -454,7 +626,7 @@ mod tests {
         let _ = fs::remove_dir_all(&temp);
         let ctx = PluginContext::for_test(&temp);
 
-        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Default)]
         struct TestData {
             key: String,
             count: u32,
@@ -469,16 +641,16 @@ mod tests {
         assert!(ctx.save_json("test_file", &data).is_ok());
 
         // Load
-        let loaded: Option<TestData> = ctx.load_json("test_file");
-        assert_eq!(loaded, Some(data));
+        let loaded: TestData = ctx.load_json("test_file");
+        assert_eq!(loaded, data);
 
         // Corrupt file
         let path = ctx.data_dir.join("test_file.json");
         fs::write(&path, b"invalid json content {[").unwrap();
 
-        // Load corrupt -> returns None and renames to .bad.<ts>
-        let corrupt_loaded: Option<TestData> = ctx.load_json("test_file");
-        assert_eq!(corrupt_loaded, None);
+        // Load corrupt -> returns Default and renames to .bad.<ts>
+        let corrupt_loaded: TestData = ctx.load_json("test_file");
+        assert_eq!(corrupt_loaded, TestData::default());
         assert!(!path.exists());
 
         let _ = fs::remove_dir_all(&temp);

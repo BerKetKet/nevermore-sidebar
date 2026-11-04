@@ -26,13 +26,52 @@ impl Tone {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeepOnHide(pub bool);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    Text,
+    Secret,
+    Bool,
+    Int,
+    Choice(&'static [&'static str]),
+    Path,
+}
+
 #[derive(Debug, Clone, Copy)]
+pub struct SettingSpec {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub kind: SettingKind,
+}
+
+impl SettingSpec {
+    pub const fn new(key: &'static str, label: &'static str, kind: SettingKind) -> Self {
+        Self { key, label, kind }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct PluginSpec {
     pub id: &'static str,
     pub title: &'static str,
     pub icon: &'static str,
     pub order: u32,
     pub description: &'static str,
+    pub settings: &'static [SettingSpec],
+    pub settings_custom: Option<fn(&crate::plugin_api::PluginContext) -> gtk4::Widget>,
+}
+
+impl std::fmt::Debug for PluginSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginSpec")
+            .field("id", &self.id)
+            .field("title", &self.title)
+            .field("icon", &self.icon)
+            .field("order", &self.order)
+            .field("description", &self.description)
+            .field("settings", &self.settings)
+            .field("has_custom_settings", &self.settings_custom.is_some())
+            .finish()
+    }
 }
 
 impl PluginSpec {
@@ -49,6 +88,28 @@ impl PluginSpec {
             icon,
             order,
             description,
+            settings: &[],
+            settings_custom: None,
+        }
+    }
+
+    pub const fn with_settings(
+        id: &'static str,
+        title: &'static str,
+        icon: &'static str,
+        order: u32,
+        description: &'static str,
+        settings: &'static [SettingSpec],
+        settings_custom: Option<fn(&crate::plugin_api::PluginContext) -> gtk4::Widget>,
+    ) -> Self {
+        Self {
+            id,
+            title,
+            icon,
+            order,
+            description,
+            settings,
+            settings_custom,
         }
     }
 }

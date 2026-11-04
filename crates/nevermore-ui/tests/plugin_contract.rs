@@ -108,14 +108,7 @@ fn test_plugin_source_linter() {
 
 #[test]
 fn test_plugin_manifest_and_icons() {
-    // Collect discovered plugins by testing specs
-    let specs = [
-        nevermore_ui::plugins::plugin_media::SPEC,
-        nevermore_ui::plugins::plugin_gemini::SPEC,
-        nevermore_ui::plugins::plugin_youtube::SPEC,
-        nevermore_ui::plugins::plugin_vpn::SPEC,
-        nevermore_ui::plugins::plugin_email::SPEC,
-    ];
+    let specs = nevermore_ui::plugins::ALL_DISCOVERED_SPECS;
 
     let mut ids = HashSet::new();
     let mut orders = HashSet::new();
@@ -166,16 +159,10 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
     let _ = fs::remove_dir_all(&temp);
     let ctx = PluginContext::for_test(&temp);
 
-    type PluginBuildEntry = (&'static str, fn(&PluginContext) -> gtk4::Widget);
-    let plugins: Vec<PluginBuildEntry> = vec![
-        ("media", nevermore_ui::plugins::plugin_media::build),
-        ("gemini", nevermore_ui::plugins::plugin_gemini::build),
-        ("youtube", nevermore_ui::plugins::plugin_youtube::build),
-        ("vpn", nevermore_ui::plugins::plugin_vpn::build),
-        ("email", nevermore_ui::plugins::plugin_email::build),
-    ];
+    let plugins = nevermore_ui::plugins::ALL_DISCOVERED_PLUGINS;
 
-    for (id, build_fn) in plugins {
+    for (spec, build_fn) in plugins {
+        let id = spec.id;
         let widget = build_fn(&ctx);
 
         // Check container width clamp

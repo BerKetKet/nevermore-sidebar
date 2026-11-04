@@ -53,7 +53,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let dot_for_msg = status_dot;
     let count_for_msg = count_label;
 
-    let tx = ctx.mailbox(move |msg: EmailMsg| match msg {
+    let tx = ctx.mailbox(move |msg: EmailMsg, _tx| match msg {
         EmailMsg::UpdateList(emails) => {
             while let Some(child) = list_for_msg.first_child() {
                 list_for_msg.remove(&child);
@@ -107,7 +107,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             .arg("json");
 
         let tx_inner = tx_refresh.clone();
-        ctx_refresh.run(himalaya_cmd, tx_inner, |res| {
+        ctx_refresh.run(himalaya_cmd, &tx_inner, |res| {
             if res.code == Some(0) && !res.stdout.trim().is_empty() {
                 if let Ok(parsed) = serde_json::from_str::<Vec<EmailSummary>>(&res.stdout) {
                     return EmailMsg::UpdateList(parsed);
