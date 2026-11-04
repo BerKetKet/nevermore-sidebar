@@ -1,5 +1,6 @@
 pub use crate::plugin_api::PluginContext;
 pub use crate::sdk::cmd::{Cmd, CmdResult};
+pub use crate::sdk::mpd::{MpdClient, MpdEndpoint, MpdError, PlayState, Song, Status};
 pub use crate::sdk::types::{
     Icon, IconSource, KeepOnHide, PluginSpec, SettingKind, SettingSpec, Tone, Tx,
 };

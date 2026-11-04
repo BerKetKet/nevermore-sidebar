@@ -74,6 +74,10 @@ impl IconButton {
         &self.icon
     }
 
+    pub fn set_icon(&self, icon: impl Into<IconSource>) {
+        self.icon.set_icon(icon);
+    }
+
     pub fn on_click(&self, f: impl Fn() + 'static) {
         self.btn.connect_clicked(move |_| {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

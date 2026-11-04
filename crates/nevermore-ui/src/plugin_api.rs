@@ -155,6 +155,16 @@ impl PluginContext {
             .register_timer(interval, keep_on_hide.0, callback);
     }
 
+    /// Registers a callback invoked whenever the plugin becomes visible.
+    pub fn on_show(&self, callback: impl Fn() + 'static) {
+        self.lifecycle.borrow_mut().register_on_show(callback);
+    }
+
+    /// Registers a callback invoked whenever the plugin becomes hidden.
+    pub fn on_hide(&self, callback: impl Fn() + 'static) {
+        self.lifecycle.borrow_mut().register_on_hide(callback);
+    }
+
     /// Spawns a background command and posts the mapped result to the mailbox.
     pub fn run<Msg: Send + 'static>(
         &self,

@@ -22,6 +22,8 @@ pub struct ChildProc {
 pub struct PluginLifecycle {
     pub timers: Vec<PluginTimer>,
     pub processes: Vec<ChildProc>,
+    pub on_show_hooks: Vec<Rc<dyn Fn()>>,
+    pub on_hide_hooks: Vec<Rc<dyn Fn()>>,
 }
 
 impl PluginLifecycle {
@@ -47,11 +49,26 @@ impl PluginLifecycle {
         self.processes.push(ChildProc { pid, keep_on_hide });
     }
 
+    pub fn register_on_show(&mut self, callback: impl Fn() + 'static) {
+        self.on_show_hooks.push(Rc::new(callback));
+    }
+
+    pub fn register_on_hide(&mut self, callback: impl Fn() + 'static) {
+        self.on_hide_hooks.push(Rc::new(callback));
+    }
+
     pub fn active_timer_count(&self) -> usize {
         self.timers.iter().filter(|t| t.source_id.is_some()).count()
     }
 
     pub fn on_show(&mut self) {
+        for hook in &self.on_show_hooks {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+                let h = hook.clone();
+                move || h()
+            }));
+        }
+
         for timer in &mut self.timers {
             if timer.source_id.is_none() {
                 // Fire immediately once
@@ -78,6 +95,13 @@ impl PluginLifecycle {
     }
 
     pub fn on_hide(&mut self) {
+        for hook in &self.on_hide_hooks {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+                let h = hook.clone();
+                move || h()
+            }));
+        }
+
         for timer in &mut self.timers {
             if !timer.keep_on_hide {
                 if let Some(source) = timer.source_id.take() {
