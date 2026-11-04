@@ -2,20 +2,45 @@
 set -euo pipefail
 cd /home/bgg/projects/nevermore-sidebar
 
-git add crates/ docs/ scripts/
-git status
+# Pre-test notification courtesy
+notify-send -u critical -t 8000 "Nevermore Worker AI" "Running live UI/screenshot test in 5 seconds — please pause mouse/keyboard for ~10s"
+sleep 5
 
-git commit -m "feat(phase7): implement notification spikes and live widgets, notifications, and notepad tabs
+echo "=== 1. Testing Single notify-send Immediate Emission & 340px Clamp ==="
+nevermore show notifications
+sleep 1
 
-- Step 7A Spikes:
-  - Spike 07: D-Bus listen-only notification monitor via BecomeMonitor without intercepting plasmashell (docs/spikes/07-notification-listen.md).
-  - Spike 08: Click-to-raise application window mapping via KWin scripting DBus (docs/spikes/08-notification-click.md).
-  - Spike 09: DND toggle evaluation proving Inhibited property is read-only and adopting standard FreeDesktop Inhibit/UnInhibit lifecycle (docs/spikes/09-dnd-toggle.md).
-- Step 7B Tabs Implementation:
-  - Widgets tab: Live CPU and RAM metrics from /proc, PipeWire volume and mute toggle via wpctl, MPRIS2 media controller, and clock/date card (docs/spikes/07-tab-widgets.png).
-  - Notifications tab: Chronological notification feed, live D-Bus listen-only capture, click-to-raise window, and DND toggle (docs/spikes/07-tab-notifications.png).
-  - Notepad tab: Persistent multi-line scratchpad, crash-proof atomic auto-saving to $XDG_DATA_HOME/nevermore/notes.txt, character and word counters (docs/spikes/07-tab-notepad.png).
-- Strict 400px width lock empirically verified across all new tabs (left edge = 1520, width = 400px).
-- Update docs/EVIDENCE_LOG.md with empirical logs and benchmarks."
+# Send a single notification with desktop-entry hint
+notify-send -a "Discord" -h "string:desktop-entry:discord" "Phase 7.5.1 Audit" "Deterministic parser immediate emission verified!"
+sleep 1
 
-git push origin main
+# Capture screenshot of notifications tab
+spectacle -b -n -o docs/spikes/07_5_1-notifications-feed.png
+sleep 0.5
+
+echo "=== 2. Testing Theme Switch & High-Contrast Accents ==="
+nevermore theme set catppuccin-mocha
+sleep 1
+spectacle -b -n -o docs/spikes/07_5_1-theme-mocha-contrast.png
+sleep 0.5
+
+nevermore theme set nevermore-dark
+sleep 1
+
+echo "=== 3. Testing DND Inhibit Property on Session D-Bus ==="
+python3 -c "
+import dbus
+bus = dbus.SessionBus()
+obj = bus.get_object('org.freedesktop.Notifications', '/org/freedesktop/Notifications')
+props = dbus.Interface(obj, 'org.freedesktop.DBus.Properties')
+val = props.Get('org.freedesktop.Notifications', 'Inhibited')
+print('Current D-Bus Inhibited status:', bool(val))
+"
+
+echo "=== 4. Resetting Sidebar to Hidden ==="
+nevermore hide
+sleep 1
+
+# All-clear notification
+notify-send -u normal -t 4000 "Nevermore Worker AI" "UI test complete — you can use the PC again!"
+echo "=== Test script finished successfully ==="

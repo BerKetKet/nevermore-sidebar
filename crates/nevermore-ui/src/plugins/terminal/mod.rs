@@ -35,11 +35,21 @@ impl SidebarPlugin for TerminalPlugin {
         &self.manifest
     }
 
+    fn manages_own_scroll(&self) -> bool {
+        true
+    }
+
     fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
-        let pane = TerminalPane::new(ctx.tmux.clone(), ctx.systemd.clone(), &ctx.theme.borrow());
+        let pane = TerminalPane::new(ctx.tmux.clone(), ctx.systemd.clone(), &ctx.theme());
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
+    }
+
+    fn on_show(&mut self) {
+        if let Some(ref pane) = self.pane {
+            pane.grab_terminal_focus();
+        }
     }
 
     fn on_theme_changed(&mut self, theme: &ThemePalette) {

@@ -10,9 +10,9 @@
 Nevermore Sidebar is built on GTK4 and `gtk4-layer-shell` on Wayland. Every feature tab inside Nevermore is implemented as an isolated **Sidebar Plugin**.
 
 The Nevermore shell enforces strict guardrails on all plugins:
-1. **Width Clamping:** The shell wraps every plugin widget in a 340px-clamped container (`CONTENT_WIDTH = 340`, `PANEL_WIDTH = 400`). A plugin can **never** stretch the sidebar wider than 400px.
-2. **Lifecycle Control:** The shell dispatches `on_show()` and `on_hide()` when the user opens, closes, or switches tabs. Plugins MUST start periodic timers (e.g., polling `/proc`) in `on_show()` and stop them in `on_hide()` to eliminate idle CPU drain.
-3. **Theme Propagation:** The shell notifies plugins of live palette changes via `on_theme_changed(&palette)`. Plugins styling custom GTK widgets with CSS classes (`.nm-card`, `.nm-btn`, etc.) update automatically; custom drawing or terminal widgets can adapt dynamically.
+1. **Width Clamping (`ScrolledWindow`):** The shell wraps every plugin widget inside a true 340px-clamped `gtk4::ScrolledWindow` (`hscrollbar_policy = Never`, `propagate_natural_width = false`, `min_content_width = 340`, `max_content_width = 340`, `hexpand = false`, `size_request = (340, -1)`). Child widgets cannot request a larger natural width and can **never** stretch the sidebar wider than 400px.
+2. **Lifecycle Control:** The shell dispatches `on_show()` and `on_hide()` when the user opens, closes, or switches tabs. Plugins MUST start periodic timers (e.g., polling `/proc`) in `on_show()` and stop them in `on_hide()` to guarantee zero idle CPU drain.
+3. **Theme Propagation:** The shell notifies plugins of live palette changes via `on_theme_changed(&palette)`. Plugins styling GTK widgets with CSS classes (`.nm-card`, `.nm-btn`, etc.) update automatically; custom drawing or terminal widgets adapt dynamically.
 
 ---
 
@@ -31,10 +31,12 @@ crates/nevermore-ui/src/plugins/<plugin_id>/
 ```toml
 id = "my-plugin"
 title = "My Plugin Title"
-icon = "widgets.svg"    # SVG icon name located in resources/icons/
+icon = "widgets.svg"    # Bundled SVG icon name or custom filename
 order = 10              # Navigation rail sort order (1..9 reserved for core)
 description = "Brief one-line summary of what this plugin does"
 ```
+
+Plugin `id` must strictly match `^[a-z0-9_-]{1,32}$` (disallowing path traversal, uppercase, or special symbols).
 
 ---
 
@@ -52,16 +54,20 @@ pub struct PluginManifest {
 ```
 
 ### `PluginContext`
-Passed by the shell to `build_widget(&mut self, ctx: &PluginContext)`. Provides capability handles to system resources:
+Passed by the shell to `build_widget(&mut self, ctx: &PluginContext)`. Provides read-only access to theme and system capability handles:
 ```rust
 pub struct PluginContext {
     pub plugin_id: String,
     pub data_dir: PathBuf,      // $XDG_DATA_HOME/nevermore/plugins/<id>/
     pub config_dir: PathBuf,    // $XDG_CONFIG_HOME/nevermore/plugins/<id>/
-    pub theme: Rc<RefCell<ThemePalette>>,
     pub tmux: TmuxBackend,
     pub systemd: SystemdTaskBackend,
     pub kwin: KWinAdapter,
+}
+
+impl PluginContext {
+    /// Read-only accessor for active theme palette
+    pub fn theme(&self) -> ThemePalette;
 }
 ```
 
@@ -71,8 +77,11 @@ pub trait SidebarPlugin {
     /// Returns the static manifest for this plugin
     fn manifest(&self) -> &PluginManifest;
 
-    /// Builds and returns the root GTK4 widget (clamped by shell to 340px width)
+    /// Builds and returns the root GTK4 widget (clamped by shell container to 340px width)
     fn build_widget(&mut self, ctx: &PluginContext) -> gtk4::Widget;
+
+    /// Whether this plugin manages its own vertical scroll (e.g. Terminal). Default: false.
+    fn manages_own_scroll(&self) -> bool { false }
 
     /// Invoked when the sidebar opens or tab becomes visible (start timers here)
     fn on_show(&mut self) {}
@@ -97,14 +106,16 @@ Use these standard semantic CSS classes for consistent theme styling:
 |---|---|
 | `.nm-card` | Container card with background secondary (`#202024`), border, and border-radius |
 | `.nm-btn` | Standard secondary action button |
-| `.nm-btn-primary` | Accent colored action button |
+| `.nm-btn-primary` | Accent colored action button (with automatic high-contrast dark or light text) |
 | `.nm-btn-danger` | Danger / destructive action button |
 | `.nm-heading` | Bold section header text |
 | `.nm-muted` | Secondary / muted text label |
+| `.nm-success` | Success colored text |
+| `.nm-warning` | Warning colored text |
 
 ---
 
-## 5. Minimal Working Example: `HelloPlugin` (~60 lines)
+## 5. Minimal Working Example: `HelloPlugin`
 
 ### `crates/nevermore-ui/src/plugins/hello/plugin.toml`
 ```toml
@@ -118,6 +129,7 @@ description = "A minimal working example Nevermore sidebar plugin"
 ### `crates/nevermore-ui/src/plugins/hello/mod.rs`
 ```rust
 use crate::plugin_api::{PluginContext, SidebarPlugin};
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Label, Orientation, Widget};
 use nevermore_core::plugin::PluginManifest;
@@ -198,9 +210,18 @@ impl SidebarPlugin for HelloPlugin {
 
 ## 6. Registering Your Plugin
 
-Add a single line in `crates/nevermore-ui/src/plugins/mod.rs` inside `create_default_registry()`:
+1. In `crates/nevermore-ui/src/plugins/mod.rs`, declare your module:
+```rust
+pub mod hello;
+```
 
+2. Inside `create_default_registry()` in `crates/nevermore-ui/src/plugins/mod.rs`, register your plugin:
 ```rust
 let ctx_hello = PluginContext::new("hello", theme.clone(), tmux.clone(), systemd.clone(), kwin.clone());
 registry.register(Box::new(hello::HelloPlugin::new()), &ctx_hello);
+```
+
+3. Dynamic tabs are automatically registered with the state machine and IPC. You can immediately switch to your new plugin via the navigation rail or CLI:
+```bash
+nevermore show hello
 ```

@@ -1,4 +1,4 @@
-use crate::types::validate_tab;
+use crate::types::CANONICAL_TABS;
 use serde::{Deserialize, Serialize};
 
 /// The four explicit states of the Nevermore sidebar.
@@ -61,6 +61,7 @@ pub struct SidebarStateMachine {
     current_state: SidebarState,
     active_tab: String,
     was_pinned: bool,
+    valid_tabs: Vec<String>,
 }
 
 impl Default for SidebarStateMachine {
@@ -71,10 +72,19 @@ impl Default for SidebarStateMachine {
 
 impl SidebarStateMachine {
     pub fn new() -> Self {
+        Self::with_valid_tabs(CANONICAL_TABS.iter().map(|s| s.to_string()).collect())
+    }
+
+    pub fn with_valid_tabs(valid_tabs: Vec<String>) -> Self {
+        let initial_tab = valid_tabs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "terminal".to_string());
         Self {
             current_state: SidebarState::Hidden,
-            active_tab: "terminal".to_string(),
+            active_tab: initial_tab,
             was_pinned: false,
+            valid_tabs,
         }
     }
 
@@ -86,17 +96,40 @@ impl SidebarStateMachine {
         &self.active_tab
     }
 
+    pub fn valid_tabs(&self) -> &[String] {
+        &self.valid_tabs
+    }
+
+    pub fn set_valid_tabs(&mut self, tabs: Vec<String>) {
+        if !tabs.is_empty() {
+            self.valid_tabs = tabs;
+        }
+    }
+
+    pub fn is_valid_tab(&self, tab: &str) -> bool {
+        self.valid_tabs.iter().any(|t| t.eq_ignore_ascii_case(tab))
+    }
+
     pub fn set_active_tab(&mut self, tab: impl AsRef<str>) -> Result<(), String> {
-        let canonical = validate_tab(tab.as_ref())?;
-        self.active_tab = canonical.to_string();
-        Ok(())
+        let tab_str = tab.as_ref();
+        if let Some(canonical) = self
+            .valid_tabs
+            .iter()
+            .find(|t| t.eq_ignore_ascii_case(tab_str))
+        {
+            self.active_tab = canonical.clone();
+            Ok(())
+        } else {
+            Err(format!(
+                "Invalid tab '{}'. Valid tabs are: {:?}",
+                tab_str, self.valid_tabs
+            ))
+        }
     }
 
     fn apply_show_tab(&mut self, tab: Option<String>) {
         if let Some(t) = tab {
-            if let Ok(canonical) = validate_tab(&t) {
-                self.active_tab = canonical.to_string();
-            }
+            let _ = self.set_active_tab(&t);
         }
     }
 
@@ -297,5 +330,15 @@ mod tests {
         assert!(sm.set_active_tab("invalid_name").is_err());
         assert!(sm.set_active_tab("widgets").is_ok());
         assert_eq!(sm.active_tab(), "widgets");
+    }
+
+    #[test]
+    fn test_dynamic_registered_plugins_tab() {
+        let mut sm = SidebarStateMachine::new();
+        assert!(!sm.is_valid_tab("hello"));
+        sm.set_valid_tabs(vec!["terminal".into(), "widgets".into(), "hello".into()]);
+        assert!(sm.is_valid_tab("hello"));
+        assert!(sm.set_active_tab("hello").is_ok());
+        assert_eq!(sm.active_tab(), "hello");
     }
 }

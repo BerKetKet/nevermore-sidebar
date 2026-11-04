@@ -41,4 +41,10 @@ impl SidebarPlugin for NotepadPlugin {
         self.pane = Some(pane);
         widget
     }
+
+    fn on_hide(&mut self) {
+        if let Some(ref pane) = self.pane {
+            pane.flush_save();
+        }
+    }
 }

@@ -1,4 +1,5 @@
 pub mod pane;
+pub mod parser;
 
 use crate::plugin_api::{PluginContext, SidebarPlugin};
 use gtk4::prelude::*;
@@ -39,5 +40,11 @@ impl SidebarPlugin for NotificationsPlugin {
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
+    }
+
+    fn on_show(&mut self) {
+        if let Some(ref pane) = self.pane {
+            pane.update_relative_times();
+        }
     }
 }

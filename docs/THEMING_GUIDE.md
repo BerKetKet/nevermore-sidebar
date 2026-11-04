@@ -6,18 +6,18 @@ Nevermore features a **Semantic Theme Engine** with live reloading, solid dark p
 
 ## 1. Built-In Themes
 
-Nevermore bundles 3 solid dark themes located in `~/.config/nevermore/themes/`:
+Nevermore bundles 3 solid dark themes automatically synchronized to `~/.config/nevermore/themes/`:
 
 1. **`nevermore-dark`** (Default)
    - Background: `#18181b`
-   - Cards: `#202024`
+   - Cards / Rail: `#202024`
    - Accent: `#0a84ff` (macOS Blue)
    - Font: Inter 10pt / Hack Nerd Font Mono 10pt
 
 2. **`catppuccin-mocha`**
    - Background: `#1e1e2e`
    - Cards / Rail: `#181825`
-   - Accent: `#89b4fa` (Lavender / Blue)
+   - Accent: `#89b4fa` (High-contrast dark `#11111b` label text)
    - Danger: `#f38ba8`
 
 3. **`tokyo-night`**
@@ -28,7 +28,7 @@ Nevermore bundles 3 solid dark themes located in `~/.config/nevermore/themes/`:
 
 ---
 
-## 2. CLI Theme Commands
+## 2. CLI Theme Commands & Live Reloading
 
 You can list and switch themes live without restarting the sidebar:
 
@@ -44,10 +44,14 @@ nevermore theme set nevermore-dark
 ```
 
 When switched via CLI or IPC:
-1. `nevermore-ui` loads the TOML palette file.
-2. The GTK4 `CssProvider` dynamically reloads CSS for all window surfaces.
-3. Registered plugins receive `on_theme_changed(&palette)` (updating VTE embedded terminal foreground, background, ANSI 16-color palette, and fonts in real time).
-4. The active theme name is saved atomically in `~/.config/nevermore/config.toml`.
+1. `nevermore-ui` validates the theme name (`^[a-zA-Z0-9_-]{1,64}$`) to prevent path traversal.
+2. The TOML palette file is parsed using the hardened per-field validator:
+   - Any missing, malformed, or invalid fields fall back safely per-field to the default `nevermore-dark` values while emitting a logged warning.
+   - All color values must be strict solid 6-digit `#rrggbb` hex codes (`rgba()`, `transparent`, and alpha-hex values are rejected to uphold the solid dark surface rules).
+   - If `term_palette` contains fewer than 16 items or has invalid colors, fallback ANSI colors ensure that exactly 16 valid colors and `term_cursor` are passed to VTE.
+3. The GTK4 `CssProvider` dynamically reloads CSS for all window surfaces and reloads `~/.config/nevermore/custom.css` if present.
+4. Registered plugins receive `on_theme_changed(&palette)`, updating VTE embedded terminal foreground, background, cursor, ANSI 16-color palette, and fonts in real time.
+5. The active theme name is saved atomically in `~/.config/nevermore/config.toml` (preserving any existing configuration keys).
 
 ---
 
@@ -55,7 +59,7 @@ When switched via CLI or IPC:
 
 To create your own custom theme:
 1. Create a `.toml` file in `~/.config/nevermore/themes/<my-theme>.toml`.
-2. Fill in the required fields (or omit any field to fall back to Nevermore Dark defaults):
+2. Fill in your chosen fields (all fields are optional; any omitted or invalid field automatically falls back to `nevermore-dark` defaults):
 
 ```toml
 name = "my-custom-theme"
@@ -86,7 +90,7 @@ term_palette = [
 ]
 ```
 
-3. Test your new theme:
+3. Test your new theme live:
 ```bash
 nevermore theme set my-custom-theme
 ```
@@ -95,5 +99,5 @@ nevermore theme set my-custom-theme
 
 ## 4. User Override Stylesheet (`custom.css`)
 
-For pixel-level manual overrides, create `~/.config/nevermore/custom.css`.
-If present, this stylesheet is automatically loaded with `STYLE_PROVIDER_PRIORITY_USER` on top of the dynamic theme CSS.
+For manual CSS tweaks, create `~/.config/nevermore/custom.css`.
+When present, this stylesheet is automatically loaded with `STYLE_PROVIDER_PRIORITY_USER` on top of the dynamic theme CSS and re-applied whenever `nevermore theme set` is executed.

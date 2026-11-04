@@ -6,7 +6,7 @@ use gtk4::{Box as GtkBox, Button, Label, Orientation, PolicyType, ScrolledWindow
 use nevermore_core::theme::ThemePalette;
 use nevermore_core::traits::{SessionBackend, TaskBackend};
 use nevermore_core::{SystemdTaskBackend, TmuxBackend};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use vte4::prelude::*;
 use vte4::Terminal;
@@ -25,6 +25,7 @@ pub struct TerminalPane {
     bg_list_box: GtkBox,
     pages: Rc<RefCell<Vec<TerminalPage>>>,
     active_page_id: Rc<RefCell<String>>,
+    next_page_id: Cell<usize>,
     tmux: TmuxBackend,
     systemd: SystemdTaskBackend,
     self_weak: RefCell<Option<Weak<TerminalPane>>>,
@@ -104,6 +105,7 @@ impl TerminalPane {
             bg_list_box,
             pages: Rc::new(RefCell::new(Vec::new())),
             active_page_id: Rc::new(RefCell::new(String::new())),
+            next_page_id: Cell::new(1),
             tmux,
             systemd,
             self_weak: RefCell::new(None),
@@ -155,11 +157,15 @@ impl TerminalPane {
         let fg = gdk::RGBA::parse(&theme.term_fg).unwrap_or(gdk::RGBA::new(0.96, 0.96, 0.96, 1.0));
         let bg =
             gdk::RGBA::parse(&theme.term_bg).unwrap_or(gdk::RGBA::new(0.094, 0.094, 0.106, 1.0));
-        let palette: Vec<gdk::RGBA> = theme
+        let cursor = gdk::RGBA::parse(&theme.term_cursor).ok();
+        let mut palette: Vec<gdk::RGBA> = theme
             .term_palette
             .iter()
             .filter_map(|c| gdk::RGBA::parse(c).ok())
             .collect();
+        while palette.len() < 16 {
+            palette.push(gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+        }
 
         let font_desc = format!("{} {}", theme.mono_font, theme.mono_font_size);
         let pango_font = pango::FontDescription::from_string(&font_desc);
@@ -167,19 +173,31 @@ impl TerminalPane {
         for p in self.pages.borrow().iter() {
             let pal_refs: Vec<&gdk::RGBA> = palette.iter().collect();
             p.terminal.set_colors(Some(&fg), Some(&bg), &pal_refs);
+            p.terminal.set_color_cursor(cursor.as_ref());
             p.terminal.set_font(Some(&pango_font));
+        }
+    }
+
+    /// Focuses the active terminal widget.
+    pub fn grab_terminal_focus(&self) {
+        let active_id = self.active_page_id.borrow().clone();
+        let pages = self.pages.borrow();
+        if let Some(p) = pages.iter().find(|p| p.id == active_id) {
+            p.terminal.grab_focus();
         }
     }
 
     /// Spawns a new terminal page attached to tmux -L nevermore with -f <conf_path>.
     pub fn create_new_page(&self, custom_name: Option<&str>) {
-        let count = self.pages.borrow().len() + 1;
+        let page_num = self.next_page_id.get();
+        self.next_page_id.set(page_num + 1);
+
         let session_name = match custom_name {
             Some(name) => name.to_string(),
-            None => format!("page_{}", count),
+            None => format!("page_{}", page_num),
         };
         let page_id = format!("page_{}_{}", session_name, glib::random_int());
-        let title = format!("{}: {}", count, session_name);
+        let title = format!("{}: {}", page_num, session_name);
 
         let terminal = Terminal::new();
         terminal.set_hexpand(true);
@@ -187,7 +205,7 @@ impl TerminalPane {
         terminal.set_size_request(200, 200);
         terminal.set_scrollback_lines(50000);
 
-        // Apply theme font and palette
+        // Apply theme font, palette, and cursor
         let theme = self.current_theme.borrow();
         let font_desc = format!("{} {}", theme.mono_font, theme.mono_font_size);
         terminal.set_font(Some(&pango::FontDescription::from_string(&font_desc)));
@@ -195,13 +213,18 @@ impl TerminalPane {
         let fg = gdk::RGBA::parse(&theme.term_fg).unwrap_or(gdk::RGBA::new(0.96, 0.96, 0.96, 1.0));
         let bg =
             gdk::RGBA::parse(&theme.term_bg).unwrap_or(gdk::RGBA::new(0.094, 0.094, 0.106, 1.0));
-        let palette: Vec<gdk::RGBA> = theme
+        let cursor = gdk::RGBA::parse(&theme.term_cursor).ok();
+        let mut palette: Vec<gdk::RGBA> = theme
             .term_palette
             .iter()
             .filter_map(|c| gdk::RGBA::parse(c).ok())
             .collect();
+        while palette.len() < 16 {
+            palette.push(gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+        }
         let pal_refs: Vec<&gdk::RGBA> = palette.iter().collect();
         terminal.set_colors(Some(&fg), Some(&bg), &pal_refs);
+        terminal.set_color_cursor(cursor.as_ref());
 
         // Spawn tmux session with -f <conf_path>
         let conf_str = self.tmux.conf_path().to_string_lossy().to_string();

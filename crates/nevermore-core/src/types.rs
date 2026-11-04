@@ -43,34 +43,6 @@ pub struct NotificationItem {
     pub timestamp_unix: u64,
 }
 
-/// Core theme palette tokens enforcing solid dark surfaces and blue accents.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThemeTokens {
-    pub surface_background: &'static str,
-    pub surface_card: &'static str,
-    pub surface_card_hover: &'static str,
-    pub accent_primary: &'static str,
-    pub accent_destructive: &'static str,
-    pub text_primary: &'static str,
-    pub text_secondary: &'static str,
-    pub border_subtle: &'static str,
-}
-
-impl Default for ThemeTokens {
-    fn default() -> Self {
-        Self {
-            surface_background: "#18181b",
-            surface_card: "#202024",
-            surface_card_hover: "#2a2a2f",
-            accent_primary: "#0a84ff",
-            accent_destructive: "#ff453a",
-            text_primary: "#ffffff",
-            text_secondary: "rgba(255, 255, 255, 0.6)",
-            border_subtle: "rgba(255, 255, 255, 0.08)",
-        }
-    }
-}
-
 /// The 9 canonical first-release tab identifiers for Nevermore.
 pub const CANONICAL_TABS: &[&str] = &[
     "terminal",

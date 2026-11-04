@@ -1,9 +1,11 @@
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, Label, Orientation, ProgressBar, Scale};
 use std::cell::RefCell;
 use std::fs;
 use std::process::Command;
 use std::rc::Rc;
+use std::thread;
 
 pub struct WidgetsPane {
     container: GtkBox,
@@ -13,10 +15,11 @@ pub struct WidgetsPane {
     cpu_label: Label,
     ram_bar: ProgressBar,
     ram_label: Label,
-    media_title: Label,
-    media_artist: Label,
     last_cpu: RefCell<Option<(u64, u64)>>,
     timer_source: RefCell<Option<glib::SourceId>>,
+    vol_debounce: RefCell<Option<glib::SourceId>>,
+    media_tx: async_channel::Sender<(String, String)>,
+    audio_tx: async_channel::Sender<(Option<f64>, Option<bool>)>,
 }
 
 impl WidgetsPane {
@@ -145,6 +148,43 @@ impl WidgetsPane {
         container.append(&audio_card);
         container.append(&media_card);
 
+        // Background channels for async offloading
+        let (media_tx, media_rx) = async_channel::unbounded::<(String, String)>();
+        let (audio_tx, audio_rx) = async_channel::unbounded::<(Option<f64>, Option<bool>)>();
+
+        // Handle media updates on main GTK loop
+        let m_title = media_title.clone();
+        let m_artist = media_artist.clone();
+        glib::spawn_future_local(async move {
+            while let Ok((title, artist)) = media_rx.recv().await {
+                if !title.is_empty() {
+                    m_title.set_label(&title);
+                    m_artist.set_label(if artist.is_empty() {
+                        "Unknown Artist"
+                    } else {
+                        &artist
+                    });
+                } else {
+                    m_title.set_label("No active player");
+                    m_artist.set_label("Idle");
+                }
+            }
+        });
+
+        // Handle audio updates on main GTK loop
+        let a_scale = vol_scale.clone();
+        let a_mute = btn_mute.clone();
+        glib::spawn_future_local(async move {
+            while let Ok((vol_opt, mute_opt)) = audio_rx.recv().await {
+                if let Some(v) = vol_opt {
+                    a_scale.set_value(v * 100.0);
+                }
+                if let Some(m) = mute_opt {
+                    a_mute.set_label(if m { "🔇" } else { "🔊" });
+                }
+            }
+        });
+
         let pane = Rc::new(Self {
             container,
             time_lbl,
@@ -153,42 +193,48 @@ impl WidgetsPane {
             cpu_label,
             ram_bar,
             ram_label,
-            media_title,
-            media_artist,
             last_cpu: RefCell::new(None),
             timer_source: RefCell::new(None),
+            vol_debounce: RefCell::new(None),
+            media_tx,
+            audio_tx: audio_tx.clone(),
         });
 
-        // Initialize Volume slider from wpctl
-        if let Ok(vol) = Self::get_wpctl_volume() {
-            vol_scale.set_value(vol * 100.0);
-        }
-
-        // Connect volume slider
-        vol_scale.connect_value_changed(|scale| {
+        // Debounced volume slider (50ms) with background spawn
+        let pane_vol = Rc::downgrade(&pane);
+        vol_scale.connect_value_changed(move |scale| {
             let val = scale.value() / 100.0;
-            let _ = Command::new("wpctl")
-                .arg("set-volume")
-                .arg("@DEFAULT_AUDIO_SINK@")
-                .arg(format!("{:.2}", val))
-                .status();
+            if let Some(p) = pane_vol.upgrade() {
+                if let Some(src) = p.vol_debounce.borrow_mut().take() {
+                    src.remove();
+                }
+                let source_id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                        thread::spawn(move || {
+                            let _ = Command::new("wpctl")
+                                .arg("set-volume")
+                                .arg("@DEFAULT_AUDIO_SINK@")
+                                .arg(format!("{:.2}", val))
+                                .spawn();
+                        });
+                        glib::ControlFlow::Break
+                    });
+                *p.vol_debounce.borrow_mut() = Some(source_id);
+            }
         });
 
-        // Connect mute button
-        let btn_mute_clone = btn_mute.clone();
+        // Mute button with async background status
         btn_mute.connect_clicked(move |_| {
-            let _ = Command::new("wpctl")
-                .arg("set-mute")
-                .arg("@DEFAULT_AUDIO_SINK@")
-                .arg("toggle")
-                .status();
-            if let Ok(muted) = Self::is_wpctl_muted() {
-                if muted {
-                    btn_mute_clone.set_label("🔇");
-                } else {
-                    btn_mute_clone.set_label("🔊");
-                }
-            }
+            let tx = audio_tx.clone();
+            thread::spawn(move || {
+                let _ = Command::new("wpctl")
+                    .arg("set-mute")
+                    .arg("@DEFAULT_AUDIO_SINK@")
+                    .arg("toggle")
+                    .status();
+                let muted = Self::is_wpctl_muted().ok();
+                let _ = tx.send_blocking((None, muted));
+            });
         });
 
         // Connect MPRIS controls
@@ -209,8 +255,10 @@ impl WidgetsPane {
         &self.container
     }
 
-    /// Triggers its 2s /proc timer strictly on show (Option 1 Lifecycle)
+    /// Triggers its 2s /proc timer strictly on show (Option 1 Lifecycle) and refreshes volume/mute
     pub fn on_show(self: &Rc<Self>) {
+        self.refresh_audio_state();
+
         if self.timer_source.borrow().is_none() {
             // Immediate update
             self.update_clock();
@@ -232,11 +280,22 @@ impl WidgetsPane {
         }
     }
 
-    /// Stops the 2s /proc timer completely when hidden or tab inactive
+    /// Stops the 2s /proc timer completely and resets last_cpu so first tick after re-opening
+    /// doesn't average across the hidden interval
     pub fn on_hide(&self) {
         if let Some(source_id) = self.timer_source.borrow_mut().take() {
             source_id.remove();
         }
+        *self.last_cpu.borrow_mut() = None;
+    }
+
+    fn refresh_audio_state(&self) {
+        let tx = self.audio_tx.clone();
+        thread::spawn(move || {
+            let vol = Self::get_wpctl_volume().ok();
+            let muted = Self::is_wpctl_muted().ok();
+            let _ = tx.send_blocking((vol, muted));
+        });
     }
 
     fn update_clock(&self) {
@@ -307,39 +366,32 @@ impl WidgetsPane {
     }
 
     fn update_media(&self) {
-        if let Ok(output) = Command::new("playerctl").arg("metadata").output() {
-            if output.status.success() {
-                let out = String::from_utf8_lossy(&output.stdout);
-                let mut title = String::new();
-                let mut artist = String::new();
-                for line in out.lines() {
-                    if line.contains("xesam:title") {
-                        title = line
-                            .split_whitespace()
-                            .skip(2)
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                    } else if line.contains("xesam:artist") {
-                        artist = line
-                            .split_whitespace()
-                            .skip(2)
-                            .collect::<Vec<_>>()
-                            .join(" ");
+        let tx = self.media_tx.clone();
+        thread::spawn(move || {
+            let mut title = String::new();
+            let mut artist = String::new();
+            if let Ok(output) = Command::new("playerctl").arg("metadata").output() {
+                if output.status.success() {
+                    let out = String::from_utf8_lossy(&output.stdout);
+                    for line in out.lines() {
+                        if line.contains("xesam:title") {
+                            title = line
+                                .split_whitespace()
+                                .skip(2)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                        } else if line.contains("xesam:artist") {
+                            artist = line
+                                .split_whitespace()
+                                .skip(2)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                        }
                     }
                 }
-                if !title.is_empty() {
-                    self.media_title.set_label(&title);
-                    self.media_artist.set_label(if artist.is_empty() {
-                        "Unknown Artist"
-                    } else {
-                        &artist
-                    });
-                    return;
-                }
             }
-        }
-        self.media_title.set_label("No active player");
-        self.media_artist.set_label("Idle");
+            let _ = tx.send_blocking((title, artist));
+        });
     }
 
     fn get_wpctl_volume() -> Result<f64, ()> {

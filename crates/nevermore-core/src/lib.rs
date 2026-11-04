@@ -32,5 +32,5 @@ pub use traits::{
 };
 pub use types::{
     is_valid_tab, validate_tab, BackgroundTask, NotificationItem, TaskState, TerminalSession,
-    ThemeTokens, CANONICAL_TABS,
+    CANONICAL_TABS,
 };

@@ -11,6 +11,7 @@ use std::rc::Rc;
 pub struct NotepadPane {
     container: GtkBox,
     status_label: Label,
+    buffer: TextBuffer,
     file_path: PathBuf,
     debounce_source: RefCell<Option<glib::SourceId>>,
 }
@@ -93,6 +94,7 @@ impl NotepadPane {
         let pane = Rc::new(Self {
             container,
             status_label,
+            buffer: buffer.clone(),
             file_path,
             debounce_source: RefCell::new(None),
         });
@@ -139,6 +141,17 @@ impl NotepadPane {
 
     pub fn widget(&self) -> &GtkBox {
         &self.container
+    }
+
+    /// Flushes any pending unsaved text immediately to disk (called on hide/shutdown).
+    pub fn flush_save(&self) {
+        if let Some(src) = self.debounce_source.borrow_mut().take() {
+            src.remove();
+            let start = self.buffer.start_iter();
+            let end = self.buffer.end_iter();
+            let text = self.buffer.text(&start, &end, false);
+            self.save_to_disk(&text);
+        }
     }
 
     fn update_counts(&self, buffer: &TextBuffer) {

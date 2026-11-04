@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Orientation, Overflow, Widget};
+use gtk4::{Overflow, PolicyType, ScrolledWindow, Widget};
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::plugin::PluginManifest;
 use nevermore_core::theme::ThemePalette;
@@ -20,7 +20,7 @@ pub struct PluginContext {
     pub plugin_id: String,
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
-    pub theme: Rc<RefCell<ThemePalette>>,
+    theme: Rc<RefCell<ThemePalette>>,
     pub tmux: TmuxBackend,
     pub systemd: SystemdTaskBackend,
     pub kwin: KWinAdapter,
@@ -78,23 +78,41 @@ impl PluginContext {
             kwin,
         }
     }
+
+    /// Read-only getter for the current theme palette.
+    pub fn theme(&self) -> ThemePalette {
+        self.theme.borrow().clone()
+    }
 }
 
 pub trait SidebarPlugin {
     fn manifest(&self) -> &PluginManifest;
     fn build_widget(&mut self, ctx: &PluginContext) -> Widget;
+    fn manages_own_scroll(&self) -> bool {
+        false
+    }
     fn on_show(&mut self) {}
     fn on_hide(&mut self) {}
     fn on_theme_changed(&mut self, _theme: &ThemePalette) {}
 }
 
-/// Helper to wrap any plugin widget in a 340px-clamped shell container with Overflow::Hidden.
-pub fn wrap_in_plugin_container(widget: &Widget) -> GtkBox {
-    let container = GtkBox::new(Orientation::Vertical, 0);
-    container.set_size_request(PLUGIN_CONTENT_WIDTH, -1);
-    container.set_hexpand(false);
-    container.set_vexpand(true);
-    container.set_overflow(Overflow::Hidden);
-    container.append(widget);
-    container
+/// Helper to wrap every plugin widget in a true 340px-clamped ScrolledWindow container.
+pub fn wrap_in_plugin_container(widget: &Widget, manages_own_scroll: bool) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(if manages_own_scroll {
+            PolicyType::Never
+        } else {
+            PolicyType::Automatic
+        })
+        .propagate_natural_width(false)
+        .min_content_width(PLUGIN_CONTENT_WIDTH)
+        .max_content_width(PLUGIN_CONTENT_WIDTH)
+        .hexpand(false)
+        .vexpand(true)
+        .build();
+    scrolled.set_size_request(PLUGIN_CONTENT_WIDTH, -1);
+    scrolled.set_overflow(Overflow::Hidden);
+    scrolled.set_child(Some(widget));
+    scrolled
 }
