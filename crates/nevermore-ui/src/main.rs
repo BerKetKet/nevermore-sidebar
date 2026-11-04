@@ -15,8 +15,9 @@ use nevermore_core::ipc::IpcResponse;
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::state::{SidebarEvent, SidebarState, SidebarStateMachine};
 use nevermore_core::theme::{
-    contrast_text_color_for_hex, custom_css_path, get_active_theme_name, install_bundled_themes,
-    list_available_themes, load_theme, set_active_theme_name, ThemePalette,
+    contrast_text_color_for_hex, custom_css_path, get_active_theme_name, get_appearance_config,
+    get_disabled_plugins, install_bundled_themes, list_available_themes, load_theme,
+    set_active_theme_name, ThemePalette,
 };
 use nevermore_core::tmux::TmuxBackend;
 use nevermore_core::traits::{SessionBackend, TaskBackend, WindowRaiser};
@@ -63,7 +64,19 @@ fn main() {
         // 1. Initialize Semantic Theme Engine & Load Dynamic GTK4 CSS
         let _ = install_bundled_themes();
         let active_theme_name = get_active_theme_name();
-        let theme_palette = load_theme(&active_theme_name).unwrap_or_default();
+        let mut theme_palette = load_theme(&active_theme_name).unwrap_or_default();
+
+        let (saved_ui_font, saved_mono_font, saved_mono_size) = get_appearance_config();
+        if let Some(ui_f) = saved_ui_font {
+            theme_palette.ui_font = ui_f;
+        }
+        if let Some(mono_f) = saved_mono_font {
+            theme_palette.mono_font = mono_f;
+        }
+        if let Some(mono_s) = saved_mono_size {
+            theme_palette.mono_font_size = mono_s as u32;
+        }
+
         let theme_cell = Rc::new(RefCell::new(theme_palette));
 
         let css_provider = CssProvider::new();
@@ -100,15 +113,19 @@ fn main() {
                 None
             }
         });
+        let monitor_height = primary_monitor
+            .as_ref()
+            .map(|m| m.geometry().height())
+            .unwrap_or(1080);
 
-        // 2A. P2-1: Build 2px Hot-Edge Layer-Shell Window with exclusive_zone = -1
+        // 2A. P2-1: Build 2px Hot-Edge Layer-Shell Window with exclusive_zone = -1 and Layer::Overlay
         let hot_edge_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Hot Edge")
             .build();
 
         hot_edge_window.init_layer_shell();
-        hot_edge_window.set_layer(Layer::Top);
+        hot_edge_window.set_layer(Layer::Overlay);
         hot_edge_window.set_exclusive_zone(-1);
         hot_edge_window.set_anchor(Edge::Right, true);
         hot_edge_window.set_anchor(Edge::Top, true);
@@ -120,25 +137,25 @@ fn main() {
         if let Some(ref mon) = primary_monitor {
             hot_edge_window.set_monitor(Some(mon));
         }
-        hot_edge_window.set_size_request(HOT_EDGE_WIDTH, 0);
-        hot_edge_window.set_default_size(HOT_EDGE_WIDTH, 0);
+        hot_edge_window.set_size_request(HOT_EDGE_WIDTH, monitor_height);
+        hot_edge_window.set_default_size(HOT_EDGE_WIDTH, monitor_height);
 
         // Child Box with rgba(24, 24, 27, 0.01) background ensures full Wayland input region
         let hot_edge_box = GtkBox::new(Orientation::Vertical, 0);
         hot_edge_box.add_css_class("hot-edge-strip");
         hot_edge_box.set_vexpand(true);
         hot_edge_box.set_hexpand(true);
-        hot_edge_box.set_size_request(HOT_EDGE_WIDTH, 0);
+        hot_edge_box.set_size_request(HOT_EDGE_WIDTH, monitor_height);
         hot_edge_window.set_child(Some(&hot_edge_box));
 
-        // 2B. P2-1: Build 400px Main Sidebar Panel Window with exclusive_zone = -1
+        // 2B. P2-1: Build 400px Main Sidebar Panel Window with exclusive_zone = -1 and Layer::Overlay
         let panel_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Wayland Sidebar")
             .build();
 
         panel_window.init_layer_shell();
-        panel_window.set_layer(Layer::Top);
+        panel_window.set_layer(Layer::Overlay);
         panel_window.set_exclusive_zone(-1);
         panel_window.set_anchor(Edge::Right, true);
         panel_window.set_anchor(Edge::Top, true);
@@ -151,9 +168,9 @@ fn main() {
             panel_window.set_monitor(Some(mon));
         }
 
-        // Lock window width strictly to 400px, full height via anchors
-        panel_window.set_size_request(PANEL_WIDTH, 0);
-        panel_window.set_default_size(PANEL_WIDTH, 0);
+        // Lock window width strictly to 400px, full monitor height
+        panel_window.set_size_request(PANEL_WIDTH, monitor_height);
+        panel_window.set_default_size(PANEL_WIDTH, monitor_height);
         panel_window.set_resizable(false);
         panel_window.add_css_class("sidebar-panel");
 
@@ -176,10 +193,11 @@ fn main() {
         valid_tabs.push("__settings__".to_string());
         state_machine.lock().unwrap().set_valid_tabs(valid_tabs);
 
-        // 5. Construct Layout locked to 400px (60px rail + 340px content)
+        // 5. Construct Layout locked to 400px (60px rail + 340px content), full monitor height
         let main_box = GtkBox::new(Orientation::Horizontal, 0);
-        main_box.set_size_request(PANEL_WIDTH, -1);
+        main_box.set_size_request(PANEL_WIDTH, monitor_height);
         main_box.set_hexpand(false);
+        main_box.set_vexpand(true);
 
         // Content Area with Header
         let content_stack = Stack::new();
@@ -189,61 +207,6 @@ fn main() {
         registry.borrow().attach_to_stack(&content_stack);
 
         let nav_rail_cell: Rc<RefCell<Option<Rc<NavRail>>>> = Rc::new(RefCell::new(None));
-
-        let on_theme_updated = {
-            let css_provider = css_provider.clone();
-            let theme_cell = theme_cell.clone();
-            let nav_rail = nav_rail_cell.clone();
-            let registry = registry.clone();
-            Rc::new(move |new_palette: &ThemePalette| {
-                *theme_cell.borrow_mut() = new_palette.clone();
-                let css = new_palette.to_gtk_css();
-                css_provider.load_from_string(&css);
-                if let Some(ref nr) = *nav_rail.borrow() {
-                    nr.on_theme_changed(new_palette);
-                }
-                registry.borrow_mut().on_theme_changed(new_palette);
-            })
-        };
-
-        let on_appearance_updated = {
-            let css_provider = css_provider.clone();
-            let theme_cell = theme_cell.clone();
-            let nav_rail = nav_rail_cell.clone();
-            let registry = registry.clone();
-            Rc::new(move |ui_font: &str, mono_font: &str, mono_font_size: f64| {
-                theme_cell.borrow_mut().ui_font = ui_font.to_string();
-                theme_cell.borrow_mut().mono_font = mono_font.to_string();
-                theme_cell.borrow_mut().mono_font_size = mono_font_size as u32;
-                let cur = theme_cell.borrow().clone();
-                let css = cur.to_gtk_css();
-                css_provider.load_from_string(&css);
-                if let Some(ref nr) = *nav_rail.borrow() {
-                    nr.on_theme_changed(&cur);
-                }
-                registry.borrow_mut().on_theme_changed(&cur);
-            })
-        };
-
-        let settings_page_ctx = Rc::new(nevermore_ui::settings_page::SettingsPageContext {
-            theme: theme_cell.clone(),
-            nav_rail: nav_rail_cell.clone(),
-            registry: registry.clone(),
-            on_theme_updated,
-            on_appearance_updated,
-            tmux: tmux.clone(),
-            systemd: systemd.clone(),
-            kwin: kwin.clone(),
-        });
-
-        let settings_page_widget =
-            nevermore_ui::settings_page::build_settings_page(settings_page_ctx);
-        content_stack.add_named(&settings_page_widget, Some("__settings__"));
-
-        let content_area = GtkBox::new(Orientation::Vertical, 0);
-        content_area.set_size_request(CONTENT_WIDTH, -1);
-        content_area.set_hexpand(false);
-        content_area.set_vexpand(true);
 
         // Slim Icon-Only Header (~36px) preserving Zone Rule horizontal swipe
         let header = GtkBox::new(Orientation::Horizontal, 6);
@@ -267,6 +230,88 @@ fn main() {
         header.append(&spacer);
         header.append(&btn_pin);
         header.append(&btn_close);
+
+        let btn_pin_theme = btn_pin.clone();
+        let btn_close_theme = btn_close.clone();
+        let on_theme_updated = {
+            let css_provider = css_provider.clone();
+            let theme_cell = theme_cell.clone();
+            let nav_rail = nav_rail_cell.clone();
+            let registry = registry.clone();
+            let btn_pin = btn_pin_theme;
+            let btn_close = btn_close_theme;
+            Rc::new(move |new_palette: &ThemePalette| {
+                let (saved_ui_font, saved_mono_font, saved_mono_size) = get_appearance_config();
+                let mut pal = new_palette.clone();
+                if let Some(ui_f) = saved_ui_font {
+                    pal.ui_font = ui_f;
+                }
+                if let Some(mono_f) = saved_mono_font {
+                    pal.mono_font = mono_f;
+                }
+                if let Some(mono_s) = saved_mono_size {
+                    pal.mono_font_size = mono_s as u32;
+                }
+                *theme_cell.borrow_mut() = pal.clone();
+                let css = pal.to_gtk_css();
+                css_provider.load_from_string(&css);
+                icons::set_button_icon(&btn_pin, "pin", &pal.text_secondary, 16);
+                icons::set_button_icon(&btn_close, "x", &pal.text_secondary, 16);
+                btn_pin.queue_draw();
+                btn_close.queue_draw();
+                if let Some(ref nr) = *nav_rail.borrow() {
+                    nr.on_theme_changed(&pal);
+                }
+                registry.borrow_mut().on_theme_changed(&pal);
+            })
+        };
+
+        let btn_pin_app = btn_pin.clone();
+        let btn_close_app = btn_close.clone();
+        let on_appearance_updated = {
+            let css_provider = css_provider.clone();
+            let theme_cell = theme_cell.clone();
+            let nav_rail = nav_rail_cell.clone();
+            let registry = registry.clone();
+            let btn_pin = btn_pin_app;
+            let btn_close = btn_close_app;
+            Rc::new(move |ui_font: &str, mono_font: &str, mono_font_size: f64| {
+                theme_cell.borrow_mut().ui_font = ui_font.to_string();
+                theme_cell.borrow_mut().mono_font = mono_font.to_string();
+                theme_cell.borrow_mut().mono_font_size = mono_font_size as u32;
+                let cur = theme_cell.borrow().clone();
+                let css = cur.to_gtk_css();
+                css_provider.load_from_string(&css);
+                icons::set_button_icon(&btn_pin, "pin", &cur.text_secondary, 16);
+                icons::set_button_icon(&btn_close, "x", &cur.text_secondary, 16);
+                btn_pin.queue_draw();
+                btn_close.queue_draw();
+                if let Some(ref nr) = *nav_rail.borrow() {
+                    nr.on_theme_changed(&cur);
+                }
+                registry.borrow_mut().on_theme_changed(&cur);
+            })
+        };
+
+        let settings_page_ctx = Rc::new(nevermore_ui::settings_page::SettingsPageContext {
+            theme: theme_cell.clone(),
+            nav_rail: nav_rail_cell.clone(),
+            registry: registry.clone(),
+            on_theme_updated,
+            on_appearance_updated,
+            tmux: tmux.clone(),
+            systemd: systemd.clone(),
+            kwin: kwin.clone(),
+        });
+
+        let settings_page_widget =
+            nevermore_ui::settings_page::build_settings_page(settings_page_ctx);
+        content_stack.add_named(&settings_page_widget, Some("__settings__"));
+
+        let content_area = GtkBox::new(Orientation::Vertical, 0);
+        content_area.set_size_request(CONTENT_WIDTH, monitor_height);
+        content_area.set_hexpand(false);
+        content_area.set_vexpand(true);
 
         content_area.append(&header);
         content_area.append(&content_stack);
@@ -379,8 +424,18 @@ fn main() {
                 apply_nav();
             },
         );
-        nav_rail.widget().set_size_request(NAV_RAIL_WIDTH, -1);
+        nav_rail
+            .widget()
+            .set_size_request(NAV_RAIL_WIDTH, monitor_height);
         nav_rail.widget().set_hexpand(false);
+        nav_rail.widget().set_vexpand(true);
+
+        // Apply disabled plugins from config.toml on startup
+        let disabled_plugins = get_disabled_plugins();
+        for dis in &disabled_plugins {
+            nav_rail.set_tab_visible(dis, false);
+        }
+
         *ctx.nav_rail.borrow_mut() = Some(nav_rail.clone());
 
         // Attach horizontal swipe gesture controller to Header Bar (Fix 8 - Zone Rule)
@@ -391,7 +446,15 @@ fn main() {
             if dx.abs() > 0.5 {
                 let mut sm = sm_for_header.lock().unwrap();
                 let cur = sm.active_tab().to_string();
-                let tabs = sm.valid_tabs().to_vec();
+                let tabs: Vec<String> = sm
+                    .valid_tabs()
+                    .iter()
+                    .filter(|t| t.as_str() != "__settings__")
+                    .cloned()
+                    .collect();
+                if tabs.is_empty() {
+                    return glib::Propagation::Proceed;
+                }
                 let current_idx = tabs.iter().position(|id| *id == cur).unwrap_or(0);
                 let next_idx = if dx > 0.0 {
                     (current_idx + 1) % tabs.len()

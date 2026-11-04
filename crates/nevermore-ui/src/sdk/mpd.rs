@@ -302,10 +302,7 @@ impl MpdClient {
             )));
         }
 
-        let version = greeting
-            .trim_start_matches("OK MPD ")
-            .trim()
-            .to_string();
+        let version = greeting.trim_start_matches("OK MPD ").trim().to_string();
 
         Ok(Self {
             reader,
@@ -476,7 +473,9 @@ impl MpdClient {
             line.clear();
             let bytes_read = self.reader.read_line(&mut line)?;
             if bytes_read == 0 {
-                return Err(MpdError::Protocol("Unexpected EOF from MPD during picture".into()));
+                return Err(MpdError::Protocol(
+                    "Unexpected EOF from MPD during picture".into(),
+                ));
             }
 
             let trimmed = line.trim_end_matches(['\r', '\n']);
@@ -647,44 +646,47 @@ pub fn start_idle(
         format!("idle {}\n", subsystems.join(" "))
     };
 
-    let thread = std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || loop {
+        if client
+            .reader
+            .get_mut()
+            .write_all(sub_cmd.as_bytes())
+            .is_err()
+        {
+            break;
+        }
+        if client.reader.get_mut().flush().is_err() {
+            break;
+        }
+
+        let mut events = Vec::new();
+        let mut line = String::new();
+        let ok_received;
+
         loop {
-            if client.reader.get_mut().write_all(sub_cmd.as_bytes()).is_err() {
+            line.clear();
+            if client.reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed == "OK" {
+                ok_received = true;
                 break;
             }
-            if client.reader.get_mut().flush().is_err() {
-                break;
+            if trimmed.starts_with("ACK ") {
+                return;
             }
 
-            let mut events = Vec::new();
-            let mut line = String::new();
-            let ok_received;
-
-            loop {
-                line.clear();
-                if client.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    return;
-                }
-
-                let trimmed = line.trim_end_matches(['\r', '\n']);
-                if trimmed == "OK" {
-                    ok_received = true;
-                    break;
-                }
-                if trimmed.starts_with("ACK ") {
-                    return;
-                }
-
-                if let Some((k, v)) = trimmed.split_once(": ") {
-                    if k == "changed" {
-                        events.push(v.to_string());
-                    }
+            if let Some((k, v)) = trimmed.split_once(": ") {
+                if k == "changed" {
+                    events.push(v.to_string());
                 }
             }
+        }
 
-            if ok_received && !events.is_empty() && tx.send_blocking(events).is_err() {
-                break;
-            }
+        if ok_received && !events.is_empty() && tx.send_blocking(events).is_err() {
+            break;
         }
     });
 
@@ -738,7 +740,10 @@ mod tests {
     #[test]
     fn test_parse_song() {
         let kvs = vec![
-            ("file".to_string(), "Artist/Album/01 - Track.flac".to_string()),
+            (
+                "file".to_string(),
+                "Artist/Album/01 - Track.flac".to_string(),
+            ),
             ("Title".to_string(), "Test Title".to_string()),
             ("Artist".to_string(), "Test Artist".to_string()),
             ("Album".to_string(), "Test Album".to_string()),

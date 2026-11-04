@@ -435,6 +435,9 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         tx_poll.send(EmailMsg::RefreshTriggered);
     });
 
+    // Initial check on startup/build
+    tx.send(EmailMsg::RefreshTriggered);
+
     let page = nm_page([
         toolbar_card.upcast::<gtk4::Widget>(),
         email_container.upcast::<gtk4::Widget>(),

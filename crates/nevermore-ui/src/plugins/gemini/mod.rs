@@ -192,7 +192,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
     // 4. Prompt Entry (activates ONLY on Enter / submit button and clears text)
     let prompt_tx = tx;
-    let status_for_prompt = status_label;
+    let status_for_prompt = status_label.clone();
     let ctx_run = ctx.clone();
 
     let prompt_entry = nm_prompt_entry("gemini", "Prompt Gemini AI assistant...", move |query| {
@@ -257,7 +257,24 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         });
     });
 
-    // 5. Clamped Vertical Page
+    // 5. Dynamic status refresh on show / every 2 seconds
+    let dot_poll = status_dot;
+    let label_poll = status_label;
+    let ctx_poll = ctx.clone();
+    ctx.every(Duration::from_secs(2), move || {
+        let has_key = get_api_key(&ctx_poll).is_some();
+        if has_key {
+            dot_poll.set_tone(Tone::Success);
+            label_poll.set("ONLINE");
+            label_poll.set_tone(Tone::Success);
+        } else {
+            dot_poll.set_tone(Tone::Warning);
+            label_poll.set("KEY MISSING");
+            label_poll.set_tone(Tone::Warning);
+        }
+    });
+
+    // 6. Clamped Vertical Page
     let page = nm_page([
         header_card.upcast::<gtk4::Widget>(),
         prompt_entry.upcast::<gtk4::Widget>(),

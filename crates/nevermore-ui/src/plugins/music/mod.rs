@@ -1,6 +1,6 @@
 use nevermore_ui::prelude::*;
 use nevermore_ui::sdk::mpd::{start_idle, IdleHandle};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -112,8 +112,6 @@ where
 }
 
 pub fn build(ctx: &PluginContext) -> gtk4::Widget {
-    let endpoint = resolve_endpoint(ctx);
-
     // 1. Top Toolbar (Status Dot, Label, Refresh button)
     let status_dot = nm_status_dot(Tone::Secondary);
     let status_label = nm_data_label("DISCONNECTED");
@@ -224,6 +222,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let current_status = Rc::new(RefCell::new(Status::default()));
     let last_known_uri = Rc::new(RefCell::new(String::new()));
     let is_user_seeking = Rc::new(RefCell::new(false));
+    let is_syncing = Rc::new(Cell::new(false));
     let previous_volume = Rc::new(RefCell::new(70i32));
     let idle_handle: Rc<RefCell<Option<IdleHandle>>> = Rc::new(RefCell::new(None));
 
@@ -244,7 +243,8 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let cur_status_for_msg = current_status.clone();
     let uri_for_msg = last_known_uri.clone();
     let user_seeking_for_msg = is_user_seeking.clone();
-    let ep_for_msg = endpoint.clone();
+    let is_syncing_for_msg = is_syncing.clone();
+    let ctx_for_refresh = ctx.clone();
 
     let tx = ctx.mailbox(move |msg: MusicMsg, tx_mailbox| match msg {
         MusicMsg::StateUpdated {
@@ -265,9 +265,11 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             let is_playing = status.state == PlayState::Playing;
             play_btn_clone.set_icon(if is_playing { "pause" } else { "play" });
 
-            // Volume
+            // Volume (guarded by is_syncing)
             if status.volume >= 0 {
+                is_syncing_for_msg.set(true);
                 vol_scale_clone.set_value(status.volume as f64);
+                is_syncing_for_msg.set(false);
                 mute_btn_clone.set_icon(if status.volume == 0 {
                     "volume-x"
                 } else {
@@ -275,10 +277,12 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                 });
             }
 
-            // Seek slider and duration
+            // Seek slider and duration (guarded by is_syncing)
             if !*user_seeking_for_msg.borrow() {
+                is_syncing_for_msg.set(true);
                 seek_scale_clone.set_range(0.0, status.duration_sec.max(1.0));
                 seek_scale_clone.set_value(status.elapsed_sec);
+                is_syncing_for_msg.set(false);
                 elapsed_lbl.set(&format_time(status.elapsed_sec));
                 duration_lbl.set(&format_time(status.duration_sec));
             }
@@ -350,13 +354,15 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             if st.state == PlayState::Playing {
                 st.elapsed_sec = (st.elapsed_sec + 1.0).min(st.duration_sec);
                 if !*user_seeking_for_msg.borrow() {
+                    is_syncing_for_msg.set(true);
                     seek_scale_clone.set_value(st.elapsed_sec);
+                    is_syncing_for_msg.set(false);
                     elapsed_lbl.set(&format_time(st.elapsed_sec));
                 }
             }
         }
         MusicMsg::RefreshTriggered => {
-            let ep = ep_for_msg.clone();
+            let ep = resolve_endpoint(&ctx_for_refresh);
             let tx_out = tx_mailbox.clone();
             let cur_uri = uri_for_msg.borrow().clone();
             let in_lru = if cur_uri.is_empty() {
@@ -418,35 +424,43 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     });
 
     // 2. Play / Pause Button
-    let ep_play = endpoint.clone();
+    let ctx_play = ctx.clone();
     let tx_play = tx.clone();
     play_pause_btn.on_click(move || {
-        spawn_action(ep_play.clone(), tx_play.clone(), |c| c.play_pause());
+        let ep = resolve_endpoint(&ctx_play);
+        spawn_action(ep, tx_play.clone(), |c| c.play_pause());
     });
 
     // 3. Prev Button
-    let ep_prev = endpoint.clone();
+    let ctx_prev = ctx.clone();
     let tx_prev = tx.clone();
     prev_btn.on_click(move || {
-        spawn_action(ep_prev.clone(), tx_prev.clone(), |c| c.prev());
+        let ep = resolve_endpoint(&ctx_prev);
+        spawn_action(ep, tx_prev.clone(), |c| c.prev());
     });
 
     // 4. Next Button
-    let ep_next = endpoint.clone();
+    let ctx_next = ctx.clone();
     let tx_next = tx.clone();
     next_btn.on_click(move || {
-        spawn_action(ep_next.clone(), tx_next.clone(), |c| c.next());
+        let ep = resolve_endpoint(&ctx_next);
+        spawn_action(ep, tx_next.clone(), |c| c.next());
     });
 
-    // 5. Seek Slider Change
+    // 5. Seek Slider Change (Guarded by is_syncing)
     let is_seeking_track = is_user_seeking;
-    let ep_seek = endpoint.clone();
+    let is_syncing_seek = is_syncing.clone();
+    let ctx_seek = ctx.clone();
     let tx_seek = tx.clone();
     seek_scale.connect_change_value({
         let is_seeking = is_seeking_track;
+        let is_sync = is_syncing_seek;
         move |_, _, target_val| {
+            if is_sync.get() {
+                return glib::Propagation::Proceed;
+            }
             *is_seeking.borrow_mut() = true;
-            let ep = ep_seek.clone();
+            let ep = resolve_endpoint(&ctx_seek);
             let tx_action = tx_seek.clone();
             std::thread::spawn(move || {
                 if let Ok(mut client) = MpdClient::connect(&ep) {
@@ -459,12 +473,16 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         }
     });
 
-    // 6. Volume Slider Change
-    let ep_vol = endpoint.clone();
+    // 6. Volume Slider Change (Guarded by is_syncing)
+    let is_syncing_vol = is_syncing.clone();
+    let ctx_vol = ctx.clone();
     let tx_vol = tx.clone();
     vol_scale.connect_change_value(move |_, _, target_val| {
+        if is_syncing_vol.get() {
+            return glib::Propagation::Proceed;
+        }
         let vol = target_val.clamp(0.0, 100.0) as i32;
-        let ep = ep_vol.clone();
+        let ep = resolve_endpoint(&ctx_vol);
         let tx_out = tx_vol.clone();
         std::thread::spawn(move || {
             if let Ok(mut client) = MpdClient::connect(&ep) {
@@ -478,7 +496,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     // 7. Mute Button Toggle
     let prev_vol_track = previous_volume;
     let cur_status_mute = current_status;
-    let ep_mute = endpoint.clone();
+    let ctx_mute = ctx.clone();
     let tx_mute = tx.clone();
     mute_btn.on_click(move || {
         let cur_vol = cur_status_mute.borrow().volume;
@@ -490,7 +508,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             restore.max(20)
         };
 
-        let ep = ep_mute.clone();
+        let ep = resolve_endpoint(&ctx_mute);
         let tx_out = tx_mute.clone();
         std::thread::spawn(move || {
             if let Ok(mut client) = MpdClient::connect(&ep) {
@@ -508,16 +526,17 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
     // 9. Idle event listener and Show/Hide hooks
     let idle_handle_track = idle_handle;
-    let ep_for_idle = endpoint;
+    let ctx_idle = ctx.clone();
     let tx_idle_event = tx.clone();
 
     let start_idle_listener = {
         let idle_holder = idle_handle_track.clone();
-        let ep = ep_for_idle.clone();
+        let ctx_ep = ctx_idle;
         let tx_event = tx_idle_event.clone();
         move || {
+            let ep = resolve_endpoint(&ctx_ep);
             let (rx, handle) = start_idle(
-                ep.clone(),
+                ep,
                 &[
                     "player",
                     "playlist",
