@@ -171,11 +171,10 @@ fn main() {
             kwin.clone(),
         )));
 
-        // P1-2: Synchronize dynamic registered plugins with state machine
-        state_machine
-            .lock()
-            .unwrap()
-            .set_valid_tabs(registry.borrow().plugin_ids());
+        // P1-2: Synchronize dynamic registered plugins with state machine (including built-in settings)
+        let mut valid_tabs = registry.borrow().plugin_ids();
+        valid_tabs.push("__settings__".to_string());
+        state_machine.lock().unwrap().set_valid_tabs(valid_tabs);
 
         // 5. Construct Layout locked to 400px (60px rail + 340px content)
         let main_box = GtkBox::new(Orientation::Horizontal, 0);
@@ -188,6 +187,58 @@ fn main() {
         content_stack.set_vexpand(true);
 
         registry.borrow().attach_to_stack(&content_stack);
+
+        let nav_rail_cell: Rc<RefCell<Option<Rc<NavRail>>>> = Rc::new(RefCell::new(None));
+
+        let on_theme_updated = {
+            let css_provider = css_provider.clone();
+            let theme_cell = theme_cell.clone();
+            let nav_rail = nav_rail_cell.clone();
+            let registry = registry.clone();
+            Rc::new(move |new_palette: &ThemePalette| {
+                *theme_cell.borrow_mut() = new_palette.clone();
+                let css = new_palette.to_gtk_css();
+                css_provider.load_from_string(&css);
+                if let Some(ref nr) = *nav_rail.borrow() {
+                    nr.on_theme_changed(new_palette);
+                }
+                registry.borrow_mut().on_theme_changed(new_palette);
+            })
+        };
+
+        let on_appearance_updated = {
+            let css_provider = css_provider.clone();
+            let theme_cell = theme_cell.clone();
+            let nav_rail = nav_rail_cell.clone();
+            let registry = registry.clone();
+            Rc::new(move |ui_font: &str, mono_font: &str, mono_font_size: f64| {
+                theme_cell.borrow_mut().ui_font = ui_font.to_string();
+                theme_cell.borrow_mut().mono_font = mono_font.to_string();
+                theme_cell.borrow_mut().mono_font_size = mono_font_size as u32;
+                let cur = theme_cell.borrow().clone();
+                let css = cur.to_gtk_css();
+                css_provider.load_from_string(&css);
+                if let Some(ref nr) = *nav_rail.borrow() {
+                    nr.on_theme_changed(&cur);
+                }
+                registry.borrow_mut().on_theme_changed(&cur);
+            })
+        };
+
+        let settings_page_ctx = Rc::new(nevermore_ui::settings_page::SettingsPageContext {
+            theme: theme_cell.clone(),
+            nav_rail: nav_rail_cell.clone(),
+            registry: registry.clone(),
+            on_theme_updated,
+            on_appearance_updated,
+            tmux: tmux.clone(),
+            systemd: systemd.clone(),
+            kwin: kwin.clone(),
+        });
+
+        let settings_page_widget =
+            nevermore_ui::settings_page::build_settings_page(settings_page_ctx);
+        content_stack.add_named(&settings_page_widget, Some("__settings__"));
 
         let content_area = GtkBox::new(Orientation::Vertical, 0);
         content_area.set_size_request(CONTENT_WIDTH, -1);
@@ -227,7 +278,7 @@ fn main() {
             state_machine: Arc<Mutex<SidebarStateMachine>>,
             btn_pin: Button,
             btn_close: Button,
-            nav_rail: RefCell<Option<Rc<NavRail>>>,
+            nav_rail: Rc<RefCell<Option<Rc<NavRail>>>>,
             content_stack: Stack,
             leave_source: RefCell<Option<glib::SourceId>>,
             peek_grace_source: RefCell<Option<glib::SourceId>>,
@@ -241,7 +292,7 @@ fn main() {
             state_machine: state_machine.clone(),
             btn_pin: btn_pin.clone(),
             btn_close: btn_close.clone(),
-            nav_rail: RefCell::new(None),
+            nav_rail: nav_rail_cell.clone(),
             content_stack: content_stack.clone(),
             leave_source: RefCell::new(None),
             peek_grace_source: RefCell::new(None),

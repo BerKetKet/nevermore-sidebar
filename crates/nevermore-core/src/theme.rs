@@ -1582,6 +1582,155 @@ pub fn set_active_theme_name(theme_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Reads the [appearance] table from config.toml. Returns (ui_font, mono_font, mono_font_size).
+pub fn get_appearance_config() -> (Option<String>, Option<String>, Option<f64>) {
+    let cfg = config_file_path();
+    if cfg.exists() {
+        if let Ok(content) = fs::read_to_string(&cfg) {
+            if let Ok(table) = toml::from_str::<toml::Table>(&content) {
+                if let Some(app) = table.get("appearance").and_then(|v| v.as_table()) {
+                    let ui = app
+                        .get("ui_font")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let mono = app
+                        .get("mono_font")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let size = app
+                        .get("mono_font_size")
+                        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+                    return (ui, mono, size);
+                }
+            }
+        }
+    }
+    (None, None, None)
+}
+
+/// Sets [appearance] values in config.toml atomically while preserving other sections.
+pub fn set_appearance_config(
+    ui_font: &str,
+    mono_font: &str,
+    mono_font_size: f64,
+) -> Result<(), String> {
+    let c_dir = config_dir();
+    fs::create_dir_all(&c_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    let cfg_path = config_file_path();
+    let mut table = if cfg_path.exists() {
+        let s = fs::read_to_string(&cfg_path).unwrap_or_default();
+        toml::from_str::<toml::Table>(&s).unwrap_or_default()
+    } else {
+        toml::Table::new()
+    };
+
+    let mut app_table = table
+        .get("appearance")
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+    app_table.insert(
+        "ui_font".to_string(),
+        toml::Value::String(ui_font.to_string()),
+    );
+    app_table.insert(
+        "mono_font".to_string(),
+        toml::Value::String(mono_font.to_string()),
+    );
+    app_table.insert(
+        "mono_font_size".to_string(),
+        toml::Value::Float(mono_font_size),
+    );
+    table.insert("appearance".to_string(), toml::Value::Table(app_table));
+
+    let toml_str =
+        toml::to_string_pretty(&table).map_err(|e| format!("Serialization error: {}", e))?;
+    let pid = std::process::id();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = c_dir.join(format!("config.{}.{}.tmp", pid, timestamp));
+    fs::write(&tmp, toml_str).map_err(|e| format!("Failed to write tmp: {}", e))?;
+    fs::rename(&tmp, &cfg_path).map_err(|e| format!("Failed to rename: {}", e))?;
+    Ok(())
+}
+
+/// Reads [plugins] disabled array from config.toml.
+pub fn get_disabled_plugins() -> Vec<String> {
+    let cfg = config_file_path();
+    if cfg.exists() {
+        if let Ok(content) = fs::read_to_string(&cfg) {
+            if let Ok(table) = toml::from_str::<toml::Table>(&content) {
+                if let Some(arr) = table
+                    .get("plugins")
+                    .and_then(|p| p.get("disabled"))
+                    .and_then(|d| d.as_array())
+                {
+                    return arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Sets whether a plugin is disabled in config.toml.
+pub fn set_plugin_disabled(plugin_id: &str, disabled: bool) -> Result<(), String> {
+    let c_dir = config_dir();
+    fs::create_dir_all(&c_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    let cfg_path = config_file_path();
+    let mut table = if cfg_path.exists() {
+        let s = fs::read_to_string(&cfg_path).unwrap_or_default();
+        toml::from_str::<toml::Table>(&s).unwrap_or_default()
+    } else {
+        toml::Table::new()
+    };
+
+    let mut plugins_table = table
+        .get("plugins")
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+    let mut current_disabled: Vec<String> = plugins_table
+        .get("disabled")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if disabled {
+        if !current_disabled.contains(&plugin_id.to_string()) {
+            current_disabled.push(plugin_id.to_string());
+        }
+    } else {
+        current_disabled.retain(|id| id != plugin_id);
+    }
+
+    let arr_values = current_disabled
+        .into_iter()
+        .map(toml::Value::String)
+        .collect();
+    plugins_table.insert("disabled".to_string(), toml::Value::Array(arr_values));
+    table.insert("plugins".to_string(), toml::Value::Table(plugins_table));
+
+    let toml_str =
+        toml::to_string_pretty(&table).map_err(|e| format!("Serialization error: {}", e))?;
+    let pid = std::process::id();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = c_dir.join(format!("config.{}.{}.tmp", pid, timestamp));
+    fs::write(&tmp, toml_str).map_err(|e| format!("Failed to write tmp: {}", e))?;
+    fs::rename(&tmp, &cfg_path).map_err(|e| format!("Failed to rename: {}", e))?;
+    Ok(())
+}
+
 /// Loads a theme by name: checks filesystem in themes_dir, falls back to bundled constants.
 pub fn load_theme(name: &str) -> Result<ThemePalette, String> {
     validate_theme_name(name)?;

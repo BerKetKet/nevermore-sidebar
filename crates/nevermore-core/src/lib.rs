@@ -22,8 +22,9 @@ pub use plugin::PluginManifest;
 pub use state::{SidebarEvent, SidebarState, SidebarStateMachine};
 pub use systemd::SystemdTaskBackend;
 pub use theme::{
-    config_dir, custom_css_path, get_active_theme_name, install_bundled_themes,
-    list_available_themes, load_theme, set_active_theme_name, themes_dir, ThemePalette,
+    config_dir, custom_css_path, get_active_theme_name, get_appearance_config,
+    get_disabled_plugins, install_bundled_themes, list_available_themes, load_theme,
+    set_active_theme_name, set_appearance_config, set_plugin_disabled, themes_dir, ThemePalette,
 };
 pub use tmux::TmuxBackend;
 pub use traits::{

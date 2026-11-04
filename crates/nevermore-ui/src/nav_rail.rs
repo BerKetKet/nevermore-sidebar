@@ -73,6 +73,30 @@ impl NavRail {
             buttons.push((id.clone(), btn));
         }
 
+        // Expanding vertical spacer separating plugin tabs from bottom-pinned settings button
+        let spacer = GtkBox::new(Orientation::Vertical, 0);
+        spacer.set_vexpand(true);
+        container.append(&spacer);
+
+        // Bottom-pinned settings gear icon button
+        let settings_btn = Button::new();
+        settings_btn.add_css_class("nav-btn");
+        settings_btn.set_tooltip_text(Some("Settings"));
+        settings_btn.update_property(&[Property::Label("Settings")]);
+        icons::set_button_icon(
+            &settings_btn,
+            "settings",
+            &initial_palette.text_secondary,
+            20,
+        );
+
+        let on_switch_settings = on_tab_switched.clone();
+        settings_btn.connect_clicked(move |_| {
+            on_switch_settings("__settings__");
+        });
+        container.append(&settings_btn);
+        buttons.push(("__settings__".to_string(), settings_btn));
+
         let nav = Rc::new(Self {
             container,
             buttons,
@@ -126,16 +150,20 @@ impl NavRail {
         *self.active_tab.borrow_mut() = tab_id.to_string();
         let palette = self.palette.borrow();
         for (id, btn) in &self.buttons {
-            let manifest = self.manifests.iter().find(|m| &m.id == id);
-            let icon_name = manifest
-                .map(|m| {
-                    if !m.icon.is_empty() {
-                        m.icon.as_str()
-                    } else {
-                        m.id.as_str()
-                    }
-                })
-                .unwrap_or(id.as_str());
+            let icon_name = if id == "__settings__" {
+                "settings"
+            } else {
+                let manifest = self.manifests.iter().find(|m| &m.id == id);
+                manifest
+                    .map(|m| {
+                        if !m.icon.is_empty() {
+                            m.icon.as_str()
+                        } else {
+                            m.id.as_str()
+                        }
+                    })
+                    .unwrap_or(id.as_str())
+            };
 
             if id == tab_id {
                 btn.add_css_class("active");
@@ -143,6 +171,14 @@ impl NavRail {
             } else {
                 btn.remove_css_class("active");
                 icons::set_button_icon(btn, icon_name, &palette.text_secondary, 20);
+            }
+        }
+    }
+
+    pub fn set_tab_visible(&self, tab_id: &str, visible: bool) {
+        for (id, btn) in &self.buttons {
+            if id == tab_id {
+                btn.set_visible(visible);
             }
         }
     }
