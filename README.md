@@ -35,7 +35,7 @@
 6. **Gemini AI (`gemini`):** Conversational AI assistant with Freedesktop Secret Service credential storage (`secret-tool`), persistent chat history, and non-blocking streaming.
 7. **YouTube (`youtube`):** Background video search via `yt-dlp` and instant hardware-accelerated playback via `mpv`.
 8. **VPN Manager (`vpn`):** Real-time Cloudflare WARP client status/toggle (`warp-cli`) and NetworkManager WireGuard profile switcher (`nmcli`).
-9. **Email Overview (`email`):** Zero-overhead inbox summary, unread badge, and one-click window raiser/launcher for desktop mail clients (`kmail`, `thunderbird`).
+9. **Gmail Inbox (`email`):** Official Gmail REST API v1 unread message inbox, unread badge, per-item cards with sender/subject/snippet, and one-click thread open in browser or mark-as-read.
 
 ---
 

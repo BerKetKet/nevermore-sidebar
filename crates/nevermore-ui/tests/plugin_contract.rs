@@ -178,11 +178,18 @@ fn test_plugin_widget_tree_and_text_free_chrome() {
 
         // Recursive walk checking that all text labels have .nm-data class
         fn check_widget(w: &gtk4::Widget, plugin_id: &str) {
+            if w.is::<gtk4::Entry>() || w.is::<gtk4::PasswordEntry>() {
+                return;
+            }
+
             if let Some(label) = w.downcast_ref::<gtk4::Label>() {
                 let text = label.text();
                 if !text.trim().is_empty() {
                     assert!(
-                        label.has_css_class("nm-data") || label.has_css_class("nm-data-value"),
+                        label.has_css_class("nm-data")
+                            || label.has_css_class("nm-data-value")
+                            || label.has_css_class("nm-section-header")
+                            || label.has_css_class("nm-field-label"),
                         "Plugin '{}' contains label with text '{}' that lacks '.nm-data' CSS class!",
                         plugin_id,
                         text

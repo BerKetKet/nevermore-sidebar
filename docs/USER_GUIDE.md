@@ -105,9 +105,9 @@ nevermore theme expand "#89b4fa"
 - **WireGuard / NetworkManager:** Discovers and activates configured NetworkManager WireGuard profiles with a single click.
 - For instructions on importing `.conf` files, consult `docs/VPN_SETUP_GUIDE.md`.
 
-### 3.9 Email Overview Tab (`email`)
-- Displays unread message counts and recent inbox envelope summaries.
-- One-click launch/raise button for your native desktop email client (`kmail`, `thunderbird`).
+### 3.9 Gmail Inbox Tab (`email`)
+- Displays unread message counts and recent inbox envelope summaries via official Gmail REST API v1.
+- One-click thread launcher in browser and direct mark-as-read action.
 - Guaranteed 0.0% background idle CPU when hidden.
 
 ---

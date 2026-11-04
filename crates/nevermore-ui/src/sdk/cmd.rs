@@ -169,4 +169,21 @@ impl Cmd {
             },
         }
     }
+
+    /// Spawns the command detached in its own process group with PR_SET_PDEATHSIG.
+    pub fn spawn_detached(&self) -> std::io::Result<()> {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        for (k, v) in &self.envs {
+            command.env(k, v);
+        }
+        command.process_group(0);
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        command.spawn().map(|_| ())
+    }
 }
