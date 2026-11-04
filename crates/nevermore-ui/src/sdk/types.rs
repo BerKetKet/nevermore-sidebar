@@ -9,6 +9,20 @@ pub enum Tone {
     Warning,
 }
 
+impl Tone {
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            Tone::Primary => "nm-tone-primary",
+            Tone::Secondary => "nm-tone-secondary",
+            Tone::Muted => "nm-tone-muted",
+            Tone::Accent => "nm-tone-accent",
+            Tone::Danger => "nm-tone-danger",
+            Tone::Success => "nm-tone-success",
+            Tone::Warning => "nm-tone-warning",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeepOnHide(pub bool);
 
@@ -43,6 +57,18 @@ impl PluginSpec {
 pub enum IconSource {
     Named(String),
     Svg(String),
+}
+
+pub type Icon = IconSource;
+
+impl IconSource {
+    pub fn svg(s: &'static str) -> Self {
+        IconSource::Svg(s.to_string())
+    }
+
+    pub fn named(name: impl Into<String>) -> Self {
+        IconSource::Named(name.into())
+    }
 }
 
 impl From<&str> for IconSource {

@@ -3,7 +3,7 @@ use gtk4::gdk;
 use gtk4::pango;
 use gtk4::prelude::*;
 use gtk4::{
-    accessible::Property, Box as GtkBox, Button, Image, Label, Orientation, PolicyType,
+    accessible::Property, Box as GtkBox, Button, DrawingArea, Label, Orientation, PolicyType,
     ScrolledWindow, Stack,
 };
 use gtk4::{gio, glib};
@@ -30,7 +30,7 @@ pub struct TerminalPane {
     btn_new: Button,
     btn_bg: Button,
     btn_close: Button,
-    bg_header_img: Image,
+    bg_header_img: DrawingArea,
     pages: Rc<RefCell<Vec<TerminalPage>>>,
     active_page_id: Rc<RefCell<String>>,
     next_page_id: Cell<usize>,
@@ -176,8 +176,7 @@ impl TerminalPane {
         icons::set_button_icon(&self.btn_new, "plus", &theme.text_secondary, 16);
         icons::set_button_icon(&self.btn_bg, "layers", &theme.text_secondary, 16);
         icons::set_button_icon(&self.btn_close, "x", &theme.text_secondary, 16);
-        let header_tex = icons::icon_texture("layers", &theme.text_secondary, 14);
-        self.bg_header_img.set_paintable(Some(&header_tex));
+        self.bg_header_img.queue_draw();
 
         let fg = gdk::RGBA::parse(&theme.term_fg).unwrap_or(gdk::RGBA::new(0.96, 0.96, 0.96, 1.0));
         let bg =

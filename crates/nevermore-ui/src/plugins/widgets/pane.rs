@@ -1,7 +1,7 @@
 use crate::icons;
 use gtk4::accessible::Property;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, Image, Label, Orientation, ProgressBar, Scale, Stack};
+use gtk4::{Box as GtkBox, Button, DrawingArea, Label, Orientation, ProgressBar, Scale, Stack};
 use nevermore_core::theme::ThemePalette;
 use std::cell::RefCell;
 use std::fs;
@@ -28,9 +28,9 @@ pub struct WidgetsPane {
     btn_prev: Button,
     btn_play_pause: Button,
     btn_next: Button,
-    cpu_icon: Image,
-    ram_icon: Image,
-    idle_music_icon: Image,
+    cpu_icon: DrawingArea,
+    ram_icon: DrawingArea,
+    idle_music_icon: DrawingArea,
     palette: RefCell<ThemePalette>,
     last_cpu: RefCell<Option<(u64, u64)>>,
     timer_source: RefCell<Option<glib::SourceId>>,
@@ -308,12 +308,9 @@ impl WidgetsPane {
         icons::set_button_icon(&self.btn_prev, "skip-back", &theme.text_secondary, 16);
         icons::set_button_icon(&self.btn_play_pause, "play", &theme.text_secondary, 16);
         icons::set_button_icon(&self.btn_next, "skip-forward", &theme.text_secondary, 16);
-        let tex_cpu = icons::icon_texture("cpu", &theme.text_secondary, 16);
-        self.cpu_icon.set_paintable(Some(&tex_cpu));
-        let tex_ram = icons::icon_texture("memory-stick", &theme.text_secondary, 16);
-        self.ram_icon.set_paintable(Some(&tex_ram));
-        let tex_music = icons::icon_texture("music", &theme.text_secondary, 24);
-        self.idle_music_icon.set_paintable(Some(&tex_music));
+        self.cpu_icon.queue_draw();
+        self.ram_icon.queue_draw();
+        self.idle_music_icon.queue_draw();
         self.refresh_audio_state();
     }
 

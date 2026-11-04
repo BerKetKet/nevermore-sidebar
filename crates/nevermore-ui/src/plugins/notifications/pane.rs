@@ -5,7 +5,8 @@ use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Box as GtkBox, Button, GestureClick, Image, Label, Orientation, PolicyType, ScrolledWindow,
+    Box as GtkBox, Button, DrawingArea, GestureClick, Label, Orientation, PolicyType,
+    ScrolledWindow,
 };
 use nevermore_core::kwin::KWinAdapter;
 use nevermore_core::theme::{contrast_text_color_for_hex, ThemePalette};
@@ -25,7 +26,7 @@ pub struct NotificationsPane {
     container: GtkBox,
     list_box: GtkBox,
     empty_box: GtkBox,
-    empty_img: Image,
+    empty_img: DrawingArea,
     btn_dnd: Button,
     btn_clear: Button,
     dnd_cookie: RefCell<Option<u32>>,
@@ -151,8 +152,7 @@ impl NotificationsPane {
     pub fn apply_theme(&self, theme: &ThemePalette) {
         *self.current_theme.borrow_mut() = theme.clone();
 
-        let empty_tex = icons::icon_texture("inbox", &theme.text_secondary, 32);
-        self.empty_img.set_paintable(Some(&empty_tex));
+        self.empty_img.queue_draw();
 
         icons::set_button_icon(&self.btn_clear, "trash-2", &theme.text_secondary, 16);
 

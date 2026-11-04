@@ -1,13 +1,11 @@
-use crate::icons::{
-    get_current_palette, raw_icon_texture, register_icon_binding, resolve_tone_color, IconBinding,
-};
+pub use crate::icons::{nm_icon, TintedIcon};
 use crate::sdk::types::{IconSource, Tone};
 use gtk4::accessible::Property;
 use gtk4::pango::EllipsizeMode;
 use gtk4::prelude::*;
 use gtk4::{
-    glib, Box as GtkBox, Button, DrawingArea, Entry, Image, Label, ListBox, ListBoxRow,
-    Orientation, ProgressBar,
+    glib, Box as GtkBox, Button, DrawingArea, Entry, Label, ListBox, ListBoxRow, Orientation,
+    ProgressBar,
 };
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
@@ -58,76 +56,7 @@ pub fn nm_toolbar(
     toolbar
 }
 
-/// 4. TintedIcon & nm_icon: Self-tinting SVG icon tracking theme palette and tone.
-#[derive(Clone)]
-pub struct TintedIcon {
-    image: Image,
-    source: Rc<RefCell<IconSource>>,
-    tone: Rc<Cell<Tone>>,
-    size_px: i32,
-    on_accent: Rc<Cell<bool>>,
-}
-
-impl TintedIcon {
-    pub fn widget(&self) -> &Image {
-        &self.image
-    }
-
-    pub fn set_tone(&self, tone: Tone) {
-        self.tone.set(tone);
-        self.refresh();
-    }
-
-    pub fn set_icon(&self, icon: impl Into<IconSource>) {
-        *self.source.borrow_mut() = icon.into();
-        self.refresh();
-    }
-
-    pub fn set_on_accent(&self, on_accent: bool) {
-        self.on_accent.set(on_accent);
-        self.refresh();
-    }
-
-    fn refresh(&self) {
-        let palette = get_current_palette();
-        let color = resolve_tone_color(self.tone.get(), &palette, self.on_accent.get());
-        let tex = raw_icon_texture(&self.source.borrow(), &color, self.size_px);
-        self.image.set_paintable(Some(&tex));
-    }
-}
-
-impl Deref for TintedIcon {
-    type Target = Image;
-    fn deref(&self) -> &Self::Target {
-        &self.image
-    }
-}
-
-pub fn nm_icon(icon: impl Into<IconSource>, tone: Tone, size_px: i32) -> TintedIcon {
-    let source = icon.into();
-    let palette = get_current_palette();
-    let color = resolve_tone_color(tone, &palette, false);
-    let tex = raw_icon_texture(&source, &color, size_px);
-    let image = Image::from_paintable(Some(&tex));
-
-    let tinted = TintedIcon {
-        image: image.clone(),
-        source: Rc::new(RefCell::new(source.clone())),
-        tone: Rc::new(Cell::new(tone)),
-        size_px,
-        on_accent: Rc::new(Cell::new(false)),
-    };
-
-    register_icon_binding(IconBinding {
-        image: image.downgrade(),
-        source,
-        tone,
-        size_px,
-        on_accent: false,
-    });
-
-    tinted
-}
+// 4. TintedIcon & nm_icon: Self-tinting SVG icon tracking theme palette and tone (defined in crate::icons).
 
 /// 5. IconButton & nm_icon_button: Accessible button with automatic tooltip and label.
 #[derive(Clone)]
@@ -502,6 +431,9 @@ impl StatusDot {
     }
 
     pub fn set_tone(&self, tone: Tone) {
+        let old = self.tone.get();
+        self.area.remove_css_class(old.css_class());
+        self.area.add_css_class(tone.css_class());
         self.tone.set(tone);
         self.area.queue_draw();
     }
@@ -510,24 +442,27 @@ impl StatusDot {
 pub fn nm_status_dot(tone: Tone) -> StatusDot {
     let area = DrawingArea::new();
     area.set_size_request(8, 8);
+    area.add_css_class("nm-status-dot");
+    area.add_css_class(tone.css_class());
     let tone_cell = Rc::new(Cell::new(tone));
-    let tone_clone = tone_cell.clone();
 
-    area.set_draw_func(move |_, cr, width, height| {
-        let palette = get_current_palette();
-        let hex = resolve_tone_color(tone_clone.get(), &palette, false);
-        if let Some((r, g, b)) = nevermore_core::theme::hex_to_rgb(&hex) {
-            cr.set_source_rgb(r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
-            let radius = (width.min(height) as f64) / 2.0;
-            cr.arc(
-                width as f64 / 2.0,
-                height as f64 / 2.0,
-                radius,
-                0.0,
-                2.0 * std::f64::consts::PI,
-            );
-            let _ = cr.fill();
-        }
+    area.set_draw_func(move |widget, cr, width, height| {
+        let rgba = widget.color();
+        cr.set_source_rgba(
+            rgba.red() as f64,
+            rgba.green() as f64,
+            rgba.blue() as f64,
+            rgba.alpha() as f64,
+        );
+        let radius = (width.min(height) as f64) / 2.0;
+        cr.arc(
+            width as f64 / 2.0,
+            height as f64 / 2.0,
+            radius,
+            0.0,
+            2.0 * std::f64::consts::PI,
+        );
+        let _ = cr.fill();
     });
 
     StatusDot {

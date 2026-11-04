@@ -673,6 +673,66 @@ impl ThemePalette {
         format!(
             r#"/* Nevermore Dynamic GTK4 CSS — Theme: {name} */
 
+:root {{
+    --nm-bg-primary: {bg_primary};
+    --nm-bg-secondary: {bg_secondary};
+    --nm-bg-tertiary: {bg_tertiary};
+    --nm-border-color: {border_color};
+    --nm-text-primary: {text_primary};
+    --nm-text-secondary: {text_secondary};
+    --nm-accent-color: {accent_color};
+    --nm-accent-fg: {accent_fg};
+    --nm-danger-color: {danger_color};
+    --nm-success-color: {success_color};
+    --nm-warning-color: {warning_color};
+    --nm-font-sans: "{ui_font}", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --nm-font-mono: "{mono_font}", monospace;
+    --nm-font-size: {mono_font_size}pt;
+    --nm-border-radius: {border_radius_px}px;
+}}
+
+/* Tone Utility Classes for Dynamic CSS Recoloring */
+.nm-tone-primary {{
+    color: {text_primary};
+}}
+.nm-tone-secondary {{
+    color: {text_secondary};
+}}
+.nm-tone-muted {{
+    color: {text_secondary};
+}}
+.nm-tone-accent {{
+    color: {accent_color};
+}}
+.nm-tone-danger {{
+    color: {danger_color};
+}}
+.nm-tone-success {{
+    color: {success_color};
+}}
+.nm-tone-warning {{
+    color: {warning_color};
+}}
+
+/* Dynamic Button State Interactions */
+button:hover .nm-tone-secondary,
+button:hover .nm-tone-muted {{
+    color: {text_primary};
+}}
+
+button.active .nm-tone-secondary,
+button.active .nm-tone-muted,
+button:checked .nm-tone-secondary,
+button:checked .nm-tone-muted {{
+    color: {accent_color};
+}}
+
+button:disabled .nm-tone-primary,
+button:disabled .nm-tone-secondary,
+button:disabled .nm-tone-accent {{
+    color: {border_color};
+}}
+
 window {{
     background-color: {bg_primary};
     color: {text_primary};
