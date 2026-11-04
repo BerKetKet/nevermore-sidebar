@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""
+music-import — Unified Music Library Migration, Organization, & Import Tool
+For Nevermore Sidebar & MPD Music Ecosystem.
+Author: Nevermore Team
+Zero grim / zero wiz dependencies. Pure Python 3 + mutagen.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+
+try:
+    import mutagen
+except ImportError:
+    print("Error: python-mutagen is required. Install via `sudo pacman -S python-mutagen`", file=sys.stderr)
+    sys.exit(1)
+
+AUDIO_EXTENSIONS = {'.mp3', '.flac', '.m4a', '.ogg', '.opus', '.wav', '.aac', '.wma', '.alac', '.aiff'}
+PRIMARY_COVER_NAMES = {'cover', 'folder', 'front'}
+ILLEGAL_CHARS_RE = re.compile(r'[/\\:*?"<>|]')
+CONTROL_CHARS_RE = re.compile(r'[\x00-\x1f\x7f]')
+
+def sanitize_component(text: str) -> str:
+    """Sanitizes a single directory or file path component."""
+    if not text:
+        return "Unknown"
+    # Unicode NFC normalization
+    norm = unicodedata.normalize('NFC', text.strip())
+    # Colon to spaced dash
+    norm = norm.replace(':', ' - ')
+    # Replace illegal characters with underscore or remove
+    norm = ILLEGAL_CHARS_RE.sub('_', norm)
+    norm = CONTROL_CHARS_RE.sub('', norm)
+    # Strip leading/trailing spaces and dots
+    norm = norm.strip(' .')
+    # Collapse multiple whitespace
+    norm = re.sub(r'\s+', ' ', norm)
+    if not norm:
+        norm = "Unknown"
+    # Enforce 255-byte max UTF-8 truncation on character boundary
+    encoded = norm.encode('utf-8')
+    if len(encoded) > 255:
+        while len(norm.encode('utf-8')) > 255:
+            norm = norm[:-1].strip(' .')
+    return norm
+
+def compute_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as fp:
+        while chunk := fp.read(131072):
+            h.update(chunk)
+    return h.hexdigest()
+
+def extract_tags(path: str):
+    """Extracts standardized audio metadata via mutagen."""
+    artist, album_artist, album, title, track, disc, year, genre = None, None, None, None, None, None, None, None
+    is_compilation = False
+    try:
+        m = mutagen.File(path, easy=True)
+        if m is not None:
+            artist = (m.get('artist', [None])[0] or "").strip() or None
+            album_artist = (m.get('albumartist', [None])[0] or "").strip() or None
+            album = (m.get('album', [None])[0] or "").strip() or None
+            title = (m.get('title', [None])[0] or "").strip() or None
+            track_raw = m.get('tracknumber', [None])[0]
+            disc_raw = m.get('discnumber', [None])[0]
+            date_raw = m.get('date', [None])[0]
+            comp_raw = m.get('compilation', [None])[0]
+            genre_raw = m.get('genre', [None])[0]
+
+            if genre_raw:
+                genre = str(genre_raw).strip() or None
+
+            if comp_raw and str(comp_raw).lower() in ('1', 'true', 'yes'):
+                is_compilation = True
+
+            if track_raw:
+                t_str = str(track_raw).split('/')[0].strip()
+                try:
+                    track = int(t_str)
+                except ValueError:
+                    track = None
+
+            if disc_raw:
+                d_str = str(disc_raw).split('/')[0].strip()
+                try:
+                    disc = int(d_str)
+                except ValueError:
+                    disc = None
+
+            if date_raw:
+                m_year = re.search(r'\b(19\d\d|20\d\d)\b', str(date_raw))
+                if m_year:
+                    year = m_year.group(1)
+    except Exception:
+        pass
+
+    return {
+        'artist': artist,
+        'album_artist': album_artist,
+        'album': album,
+        'title': title,
+        'track': track,
+        'disc': disc,
+        'year': year,
+        'genre': genre,
+        'is_compilation': is_compilation,
+    }
+
+def plan_musicbee_migration(musicbee_source_dir: str):
+    """Plans migration from MusicBee legacy directory to target destinations."""
+    home = os.path.expanduser("~")
+    music_dir = os.path.join(home, "Music")
+    audio_dir = os.path.join(home, "Audio")
+    archive_dir = os.path.join(home, "Archive", "MusicBee-legacy")
+    inbox_dir = os.path.join(home, "Music-Inbox")
+    needs_tags_dir = os.path.join(inbox_dir, "needs-tags")
+    conflicts_dir = os.path.join(inbox_dir, "conflicts")
+    duplicates_dir = os.path.join(inbox_dir, "duplicates")
+
+    entries = []
+    # Map album folders from source to target album directory: (parent_rel_source) -> target_album_dir
+    album_target_dirs = {}
+    # Map source audio file path -> target audio file path (for matching .lrc and .cue sidecars)
+    audio_target_map = {}
+    # Map of song titles to target track paths (for matching #lyrics files)
+    title_target_map = {}
+
+    # Pass 1: Plan Audio Tracks
+    for root, _, files in os.walk(musicbee_source_dir):
+        for f in sorted(files):
+            full_src = os.path.join(root, f)
+            rel_src = os.path.relpath(full_src, musicbee_source_dir)
+            _, ext = os.path.splitext(f.lower())
+
+            if ext not in AUDIO_EXTENSIONS:
+                continue
+
+            # Check Podcasts
+            if rel_src.startswith("Podcasts" + os.sep) or "podcast" in rel_src.lower():
+                rel_pod = os.path.relpath(full_src, os.path.join(musicbee_source_dir, "Podcasts")) if rel_src.startswith("Podcasts" + os.sep) else f
+                parts = [sanitize_component(p) for p in rel_pod.split(os.sep)]
+                target = os.path.join(audio_dir, "Podcasts", *parts)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Audio/Podcasts'})
+                audio_target_map[full_src] = target
+                continue
+
+            tags = extract_tags(full_src)
+
+            # Check Audiobooks (either directory, or tagged audiobook/speech, or Steven Erikson)
+            is_audiobook = (
+                rel_src.startswith("Audiobooks" + os.sep)
+                or (tags['genre'] and tags['genre'].lower() in ('audiobook', 'speech'))
+                or "audiobook" in rel_src.lower()
+                or "by steven erikson" in rel_src.lower()
+            )
+
+            if is_audiobook:
+                author = tags['album_artist'] or tags['artist'] or "Unknown Author"
+                book = tags['album'] or "Unknown Book"
+                title = tags['title'] or os.path.splitext(f)[0]
+                author_clean = sanitize_component(author)
+                book_clean = sanitize_component(book)
+                title_clean = sanitize_component(title)
+
+                if tags['track'] is not None:
+                    track_prefix = f"{tags['track']:02d} - "
+                else:
+                    track_prefix = ""
+
+                track_filename = sanitize_component(f"{track_prefix}{title_clean}") + ext
+                target_album_dir = os.path.join(audio_dir, "Audiobooks", author_clean, book_clean)
+                target = os.path.join(target_album_dir, track_filename)
+
+                parent_rel = os.path.dirname(rel_src)
+                album_target_dirs[parent_rel] = target_album_dir
+                audio_target_map[full_src] = target
+
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Audio/Audiobooks'})
+                continue
+
+            # Missing essential tags: quarantine to needs-tags
+            if not tags['title'] or (not tags['album'] and not tags['artist']):
+                target = os.path.join(needs_tags_dir, rel_src)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Quarantine/needs-tags'})
+                continue
+
+            # Determine Album Artist
+            if tags['is_compilation'] or (tags['artist'] and 'various' in tags['artist'].lower()):
+                album_artist = "Various Artists"
+            else:
+                album_artist = tags['album_artist'] or tags['artist'] or "Unknown Artist"
+
+            album_artist_clean = sanitize_component(album_artist)
+            album_clean = sanitize_component(tags['album'] or "Unknown Album")
+            title_clean = sanitize_component(tags['title'])
+
+            # Year - Album folder
+            if tags['year']:
+                album_folder = f"{tags['year']} - {album_clean}"
+            else:
+                album_folder = album_clean
+            album_folder = sanitize_component(album_folder)
+
+            # Track file name
+            if tags['disc'] and tags['disc'] > 1:
+                disc_prefix = f"{tags['disc']}-"
+            else:
+                disc_prefix = ""
+
+            if tags['track'] is not None:
+                track_prefix = f"{disc_prefix}{tags['track']:02d} - "
+            else:
+                track_prefix = ""
+
+            track_filename = sanitize_component(f"{track_prefix}{title_clean}") + ext
+            target_album_dir = os.path.join(music_dir, album_artist_clean, album_folder)
+            target = os.path.join(target_album_dir, track_filename)
+
+            parent_rel = os.path.dirname(rel_src)
+            album_target_dirs[parent_rel] = target_album_dir
+            audio_target_map[full_src] = target
+
+            # Store for matching lyrics
+            title_target_map[title_clean.lower()] = os.path.splitext(target)[0]
+
+            entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Music'})
+
+    # Pass 2: Plan Non-Audio Sidecars, Covers, Skins, Playlists
+    claimed_covers = set()
+    for root, _, files in os.walk(musicbee_source_dir):
+        for f in sorted(files):
+            full_src = os.path.join(root, f)
+            rel_src = os.path.relpath(full_src, musicbee_source_dir)
+            stem, ext = os.path.splitext(f.lower())
+
+            if ext in AUDIO_EXTENSIONS:
+                continue
+
+            parent_rel = os.path.dirname(rel_src)
+
+            # 1. Matching .lrc or .cue sidecar next to an audio track
+            corresponding_audio = None
+            for a_ext in AUDIO_EXTENSIONS:
+                cand = os.path.splitext(full_src)[0] + a_ext
+                if cand in audio_target_map:
+                    corresponding_audio = audio_target_map[cand]
+                    break
+
+            if corresponding_audio and ext in ('.lrc', '.cue'):
+                target = os.path.splitext(corresponding_audio)[0] + ext
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Music/Sidecars'})
+                continue
+
+            # 2. Playlists (.m3u, .m3u8, .xautopf, .mbp in Playlists)
+            if rel_src.startswith("Playlists" + os.sep) or ext in ('.xautopf', '.m3u', '.m3u8'):
+                rel_pl = os.path.relpath(full_src, os.path.join(musicbee_source_dir, "Playlists")) if rel_src.startswith("Playlists" + os.sep) else f
+                target = os.path.join(archive_dir, "Playlists", rel_pl)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Playlists'})
+                continue
+
+            # 3. Non-music app files to Archive
+            if rel_src.startswith("Skins" + os.sep):
+                rel_rel = os.path.relpath(full_src, os.path.join(musicbee_source_dir, "Skins"))
+                target = os.path.join(archive_dir, "Skins", rel_rel)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Skins'})
+                continue
+
+            if rel_src.startswith("Artist Pictures" + os.sep):
+                rel_rel = os.path.relpath(full_src, os.path.join(musicbee_source_dir, "Artist Pictures"))
+                target = os.path.join(archive_dir, "Artist Pictures", rel_rel)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/ArtistPictures'})
+                continue
+
+            if f.startswith("MusicBeeLibrary") or f.endswith(".mbp") or f.endswith(".ini") or f.endswith(".bak") or f.endswith(".dat") or f.endswith(".pfidx"):
+                target = os.path.join(archive_dir, "Database", f)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Database'})
+                continue
+
+            # 4. #lyrics files
+            if rel_src.startswith("#lyrics" + os.sep):
+                target = os.path.join(archive_dir, "lyrics_original", f)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Lyrics'})
+                continue
+
+            # 5. Images (Album art vs Thumbnails)
+            if ext in ('.jpg', '.png', '.jpeg'):
+                is_primary_cover = stem in PRIMARY_COVER_NAMES or 'cover' in stem or 'front' in stem
+                target_album_dir = album_target_dirs.get(parent_rel)
+
+                if target_album_dir and is_primary_cover:
+                    target_art_name = "cover.png" if ext == '.png' else "cover.jpg"
+                    cand_target = os.path.join(target_album_dir, target_art_name)
+                    if cand_target not in claimed_covers:
+                        claimed_covers.add(cand_target)
+                        cat = 'Audio/Audiobooks' if 'Audiobooks' in target_album_dir else 'Music/CoverArt'
+                        entries.append({'src': full_src, 'rel_src': rel_src, 'target': cand_target, 'category': cat})
+                        continue
+
+                target = os.path.join(archive_dir, "Thumbnails", rel_src)
+                entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Thumbnails'})
+                continue
+
+            # Default fallback for any remaining stray file
+            target = os.path.join(archive_dir, "Miscellaneous", rel_src)
+            entries.append({'src': full_src, 'rel_src': rel_src, 'target': target, 'category': 'Archive/Misc'})
+
+    # Pass 3: Collision and Exact Duplicate Resolution
+    resolved_entries = []
+    seen_target_paths = {}
+
+    for e in entries:
+        tgt = e['target']
+        src = e['src']
+        sha = compute_sha256(src)
+        e['sha256'] = sha
+
+        if tgt not in seen_target_paths:
+            seen_target_paths[tgt] = (src, sha)
+            resolved_entries.append(e)
+        else:
+            prev_src, prev_sha = seen_target_paths[tgt]
+            if sha == prev_sha:
+                # Exact byte duplicate -> quarantine to ~/Music-Inbox/duplicates/
+                dup_target = os.path.join(duplicates_dir, os.path.basename(tgt))
+                # Ensure unique duplicate name if multiple dups share filename
+                dup_base, dup_ext = os.path.splitext(dup_target)
+                dup_idx = 1
+                while dup_target in seen_target_paths:
+                    dup_target = f"{dup_base}_{dup_idx}{dup_ext}"
+                    dup_idx += 1
+                seen_target_paths[dup_target] = (src, sha)
+                e['target'] = dup_target
+                e['category'] = 'Quarantine/duplicates'
+                resolved_entries.append(e)
+            else:
+                # Collision with different hash -> quarantine to ~/Music-Inbox/conflicts/
+                conf_target = os.path.join(conflicts_dir, os.path.basename(tgt))
+                conf_base, conf_ext = os.path.splitext(conf_target)
+                conf_idx = 1
+                while conf_target in seen_target_paths:
+                    conf_target = f"{conf_base}_{conf_idx}{conf_ext}"
+                    conf_idx += 1
+                seen_target_paths[conf_target] = (src, sha)
+                e['target'] = conf_target
+                e['category'] = 'Quarantine/conflicts'
+                resolved_entries.append(e)
+
+    return resolved_entries
+
+def main():
+    parser = argparse.ArgumentParser(description="Unified Music Library Migration, Organization, & Import Tool")
+    parser.add_argument("--migrate-musicbee", action="store_true", help="Execute or plan migration from MusicBee legacy directory")
+    parser.add_argument("--dry-run", action="store_true", help="Perform dry run without moving or copying files")
+    parser.add_argument("--apply", action="store_true", help="Apply migration or import")
+    parser.add_argument("--undo", metavar="MANIFEST_TSV", help="Undo migration using a manifest.tsv")
+    parser.add_argument("--move", action="store_true", help="Move files instead of copying during import")
+    parser.add_argument("paths", nargs="*", help="File or directory paths to import")
+
+    args = parser.parse_args()
+
+    # 1. UNDO MODE
+    if args.undo:
+        manifest_path = args.undo
+        if not os.path.exists(manifest_path):
+            print(f"Error: Manifest file '{manifest_path}' does not exist.", file=sys.stderr)
+            sys.exit(1)
+        print(f"[*] Reversing migration using manifest: {manifest_path}")
+        with open(manifest_path, 'r', encoding='utf-8') as fp:
+            lines = [l.strip().split('\t') for l in fp if l.strip() and not l.startswith('#')]
+
+        undone = 0
+        for row in reversed(lines):
+            if len(row) >= 2:
+                src, target = row[0], row[1]
+                if os.path.exists(target):
+                    os.makedirs(os.path.dirname(src), exist_ok=True)
+                    os.rename(target, src)
+                    undone += 1
+
+        # Check if legacy directory was renamed and move back
+        legacy_dir = os.path.expanduser("~/MusicBee-legacy")
+        orig_dir = os.path.expanduser("~/Music/MusicBee")
+        if os.path.exists(legacy_dir) and not os.path.exists(orig_dir):
+            os.rename(legacy_dir, orig_dir)
+            print(f"[*] Restored {legacy_dir} -> {orig_dir}")
+
+        print(f"[+] Successfully undone {undone} file moves.")
+        sys.exit(0)
+
+    # 2. MIGRATE MUSICBEE MODE
+    if args.migrate_musicbee:
+        source_dir = os.path.expanduser("~/Music/MusicBee")
+        if not os.path.exists(source_dir):
+            # Check if already renamed to MusicBee-legacy
+            alt_dir = os.path.expanduser("~/MusicBee-legacy")
+            if os.path.exists(alt_dir):
+                source_dir = alt_dir
+            else:
+                print(f"Error: Neither {source_dir} nor {alt_dir} exists.", file=sys.stderr)
+                sys.exit(1)
+
+        print(f"[*] Planning migration from: {source_dir}")
+        plan = plan_musicbee_migration(source_dir)
+
+        manifest_dir = "/home/bgg/projects/nevermore-sidebar/docs/music_migration"
+        os.makedirs(manifest_dir, exist_ok=True)
+        manifest_file = os.path.join(manifest_dir, "manifest.tsv")
+        journal_file = os.path.join(manifest_dir, "journal.jsonl")
+        undo_script = os.path.join(manifest_dir, "undo_migration.sh")
+
+        with open(manifest_file, "w", encoding="utf-8") as fp:
+            fp.write("# SOURCE_PATH\tTARGET_PATH\tCATEGORY\tSHA256\n")
+            for item in plan:
+                fp.write(f"{item['src']}\t{item['target']}\t{item['category']}\t{item['sha256']}\n")
+
+        with open(undo_script, "w", encoding="utf-8") as fp:
+            fp.write("#!/bin/bash\nset -euo pipefail\n")
+            fp.write(f"music-import --undo \"{manifest_file}\"\n")
+        os.chmod(undo_script, 0o755)
+
+        print(f"[+] Manifest generated: {manifest_file} ({len(plan)} items)")
+        print(f"[+] Undo script generated: {undo_script}")
+
+        cat_counts = {}
+        for item in plan:
+            c = item['category']
+            cat_counts[c] = cat_counts.get(c, 0) + 1
+
+        print("\n[MIGRATION PLAN SUMMARY]")
+        for cat, count in sorted(cat_counts.items()):
+            print(f"  * {cat:<25}: {count:>5} files")
+        print(f"\nTotal planned moves: {len(plan)}")
+
+        if args.dry_run or not args.apply:
+            print("\nRun with `--migrate-musicbee --apply` to execute atomic migration.")
+            sys.exit(0)
+
+        # APPLY MIGRATION
+        print("\n[*] Executing journaled atomic migration...")
+        legacy_dir = os.path.expanduser("~/MusicBee-legacy")
+        if source_dir == os.path.expanduser("~/Music/MusicBee") and not os.path.exists(legacy_dir):
+            os.rename(source_dir, legacy_dir)
+            print(f"[+] Atomically renamed {source_dir} -> {legacy_dir}")
+            # Update paths in plan
+            for item in plan:
+                item['src'] = item['src'].replace(source_dir, legacy_dir, 1)
+
+        applied = 0
+        with open(journal_file, "w", encoding="utf-8") as j_fp:
+            for item in plan:
+                src = item['src']
+                tgt = item['target']
+                if os.path.exists(src):
+                    os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                    os.rename(src, tgt)
+                    applied += 1
+                    j_fp.write(json.dumps({'src': src, 'target': tgt, 'sha256': item['sha256'], 'category': item['category']}) + "\n")
+                    j_fp.flush()
+
+        print(f"[+] Migration complete: {applied} files moved cleanly.")
+        print(f"[+] Journal written: {journal_file}")
+
+        # Clean up empty directories inside legacy_dir
+        if os.path.exists(legacy_dir):
+            cleaned = 0
+            for root, dirs, files in os.walk(legacy_dir, topdown=False):
+                if not dirs and not files:
+                    try:
+                        os.rmdir(root)
+                        cleaned += 1
+                    except OSError:
+                        pass
+            print(f"[*] Pruned {cleaned} empty directories in {legacy_dir}")
+
+        sys.exit(0)
+
+    # 3. ONGOING IMPORT MODE (L7)
+    if not args.paths:
+        parser.print_help()
+        sys.exit(0)
+
+    target_music_dir = os.path.expanduser("~/Music")
+    imported_count = 0
+
+    for path in args.paths:
+        if not os.path.exists(path):
+            print(f"Warning: '{path}' does not exist, skipping.", file=sys.stderr)
+            continue
+
+        if os.path.isfile(path):
+            files_to_import = [path]
+        else:
+            files_to_import = []
+            for root, _, fs in os.walk(path):
+                for f in fs:
+                    files_to_import.append(os.path.join(root, f))
+
+        for src_file in files_to_import:
+            _, ext = os.path.splitext(src_file.lower())
+            if ext in AUDIO_EXTENSIONS:
+                tags = extract_tags(src_file)
+                album_artist = tags['album_artist'] or tags['artist'] or "Unknown Artist"
+                if tags['is_compilation']:
+                    album_artist = "Various Artists"
+                album_artist_clean = sanitize_component(album_artist)
+                album_clean = sanitize_component(tags['album'] or "Unknown Album")
+                title_clean = sanitize_component(tags['title'] or os.path.splitext(os.path.basename(src_file))[0])
+
+                if tags['year']:
+                    album_folder = sanitize_component(f"{tags['year']} - {album_clean}")
+                else:
+                    album_folder = album_clean
+
+                disc_p = f"{tags['disc']}-" if tags['disc'] and tags['disc'] > 1 else ""
+                track_p = f"{disc_p}{tags['track']:02d} - " if tags['track'] is not None else ""
+                track_fname = sanitize_component(f"{track_p}{title_clean}") + ext
+                dest_path = os.path.join(target_music_dir, album_artist_clean, album_folder, track_fname)
+
+                if args.dry_run:
+                    print(f"[DRY-RUN] {src_file} -> {dest_path}")
+                else:
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    if args.move:
+                        os.rename(src_file, dest_path)
+                    else:
+                        shutil.copy2(src_file, dest_path)
+                        # Verify SHA-256
+                        if compute_sha256(src_file) != compute_sha256(dest_path):
+                            print(f"Error: SHA-256 mismatch for {dest_path}!", file=sys.stderr)
+                            sys.exit(1)
+                    imported_count += 1
+
+    if not args.dry_run and imported_count > 0:
+        print(f"[+] Imported {imported_count} tracks into {target_music_dir}")
+        os.system("mpc update >/dev/null 2>&1 || true")
+
+if __name__ == "__main__":
+    main()
