@@ -1,6 +1,12 @@
 use nevermore_ui::prelude::*;
 
-pub const GEMINI_MODELS: &[&str] = &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"];
+pub const GEMINI_MODELS: &[&str] = &[
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+];
 
 pub const SETTINGS: &[SettingSpec] = &[
     SettingSpec::new("gemini_api_key", "Gemini API Key", SettingKind::Secret),
