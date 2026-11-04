@@ -1,8 +1,9 @@
 pub mod notepad;
 pub mod notifications;
-pub mod placeholders;
 pub mod terminal;
 pub mod widgets;
+
+include!(concat!(env!("OUT_DIR"), "/plugins_gen.rs"));
 
 use crate::plugin_api::{wrap_in_plugin_container, PluginContext, SidebarPlugin};
 use gtk4::{ScrolledWindow, Stack};
@@ -193,54 +194,14 @@ pub fn create_default_registry(
     );
     registry.register(Box::new(notepad::NotepadPlugin::new()), &ctx_note);
 
-    // 5-9 Placeholders
-    let placeholders = [
-        (
-            "media",
-            "Media Player",
-            "media.svg",
-            5,
-            "Media player playback and controls",
-        ),
-        (
-            "gemini",
-            "Gemini Chat",
-            "gemini.svg",
-            6,
-            "Gemini AI assistant inline chat",
-        ),
-        (
-            "youtube",
-            "YouTube",
-            "youtube.svg",
-            7,
-            "YouTube search and queue",
-        ),
-        (
-            "vpn",
-            "VPN Status",
-            "vpn.svg",
-            8,
-            "VPN wireguard status and toggle",
-        ),
-        ("email", "Email", "email.svg", 9, "Email inbox overview"),
-    ];
-
-    for (id, title, icon, order, desc) in placeholders {
-        let ctx_p = PluginContext::new(
-            id,
-            theme.clone(),
-            tmux.clone(),
-            systemd.clone(),
-            kwin.clone(),
-        );
-        registry.register(
-            Box::new(placeholders::PlaceholderPlugin::new(
-                id, title, icon, order, desc,
-            )),
-            &ctx_p,
-        );
-    }
+    // 5+ Auto-discovered plugins via build.rs
+    register_discovered_spec_plugins(
+        &mut registry,
+        theme.clone(),
+        tmux.clone(),
+        systemd.clone(),
+        kwin.clone(),
+    );
 
     registry.sort_by_order();
     registry

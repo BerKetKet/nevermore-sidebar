@@ -37,6 +37,11 @@ const SVG_MUSIC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" he
 const SVG_ERASER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>"#;
 const SVG_INBOX: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>"#;
 const SVG_CORNER_UP_LEFT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>"#;
+const SVG_SEARCH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"#;
+const SVG_SHIELD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>"#;
+const SVG_CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#;
+const SVG_ALERT_TRIANGLE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>"#;
+const SVG_ALERT_CIRCLE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>"#;
 
 thread_local! {
     static TEXTURE_CACHE: RefCell<HashMap<(String, String, i32), gdk::Texture>> = RefCell::new(HashMap::new());
@@ -74,8 +79,164 @@ pub fn get_svg_template(name: &str) -> &'static str {
         "eraser" => SVG_ERASER,
         "inbox" => SVG_INBOX,
         "corner-up-left" | "attach" => SVG_CORNER_UP_LEFT,
+        "search" => SVG_SEARCH,
+        "shield" => SVG_SHIELD,
+        "check" => SVG_CHECK,
+        "alert-triangle" => SVG_ALERT_TRIANGLE,
+        "alert-circle" => SVG_ALERT_CIRCLE,
+        "mail" => SVG_EMAIL,
+        "sparkles" => SVG_GEMINI,
+        "clock" => SVG_MEDIA,
+        "chevron-left" => SVG_SKIP_BACK,
+        "chevron-right" => SVG_SKIP_FORWARD,
+        "arrow-right" => SVG_SKIP_FORWARD,
+        "rotate-cw" => SVG_WIDGETS,
+        "shield-off" => SVG_SHIELD,
+        "globe" => SVG_VPN,
+        "external-link" => SVG_TERMINAL,
 
         _ => SVG_PUZZLE,
+    }
+}
+
+pub fn has_icon(name: &str) -> bool {
+    let clean = name.strip_suffix(".svg").unwrap_or(name);
+    matches!(
+        clean,
+        "terminal"
+            | "widgets"
+            | "notifications"
+            | "notepad"
+            | "media"
+            | "gemini"
+            | "youtube"
+            | "vpn"
+            | "email"
+            | "pin"
+            | "pin-off"
+            | "x"
+            | "close"
+            | "bell"
+            | "bell-off"
+            | "trash-2"
+            | "trash"
+            | "plus"
+            | "layers"
+            | "cpu"
+            | "memory-stick"
+            | "ram"
+            | "volume-2"
+            | "volume"
+            | "volume-x"
+            | "mute"
+            | "skip-back"
+            | "play"
+            | "pause"
+            | "skip-forward"
+            | "music"
+            | "eraser"
+            | "inbox"
+            | "corner-up-left"
+            | "attach"
+            | "search"
+            | "shield"
+            | "check"
+            | "alert-triangle"
+            | "alert-circle"
+            | "mail"
+            | "sparkles"
+            | "clock"
+            | "chevron-left"
+            | "chevron-right"
+            | "arrow-right"
+            | "rotate-cw"
+            | "shield-off"
+            | "globe"
+            | "external-link"
+            | "puzzle"
+    )
+}
+
+use crate::sdk::types::{IconSource, Tone};
+use nevermore_core::theme::{contrast_text_color_for_hex, ThemePalette};
+
+pub fn resolve_tone_color(tone: Tone, palette: &ThemePalette, on_accent: bool) -> String {
+    if on_accent {
+        return contrast_text_color_for_hex(&palette.accent_color).to_string();
+    }
+    match tone {
+        Tone::Primary => palette.text_primary.clone(),
+        Tone::Secondary => palette.text_secondary.clone(),
+        Tone::Muted => palette.text_secondary.clone(),
+        Tone::Accent => palette.accent_color.clone(),
+        Tone::Danger => palette.danger_color.clone(),
+        Tone::Success => palette.success_color.clone(),
+        Tone::Warning => palette.warning_color.clone(),
+    }
+}
+
+pub struct IconBinding {
+    pub image: glib::WeakRef<gtk4::Image>,
+    pub source: IconSource,
+    pub tone: Tone,
+    pub size_px: i32,
+    pub on_accent: bool,
+}
+
+thread_local! {
+    static ICON_BINDINGS: RefCell<Vec<IconBinding>> = const { RefCell::new(Vec::new()) };
+    static CURRENT_PALETTE: RefCell<ThemePalette> = RefCell::new(ThemePalette::default());
+}
+
+pub fn get_current_palette() -> ThemePalette {
+    CURRENT_PALETTE.with(|p| p.borrow().clone())
+}
+
+pub fn register_icon_binding(binding: IconBinding) {
+    ICON_BINDINGS.with(|b| {
+        b.borrow_mut().push(binding);
+    });
+}
+
+pub fn on_theme_changed(palette: &ThemePalette) {
+    CURRENT_PALETTE.with(|p| {
+        *p.borrow_mut() = palette.clone();
+    });
+
+    ICON_BINDINGS.with(|b| {
+        let mut bindings = b.borrow_mut();
+        bindings.retain(|item| {
+            if let Some(img) = item.image.upgrade() {
+                let color = resolve_tone_color(item.tone, palette, item.on_accent);
+                let tex = raw_icon_texture(&item.source, &color, item.size_px);
+                img.set_paintable(Some(&tex));
+                true
+            } else {
+                false
+            }
+        });
+    });
+}
+
+pub fn raw_icon_texture(source: &IconSource, hex_color: &str, size_px: i32) -> gdk::Texture {
+    match source {
+        IconSource::Named(name) => icon_texture(name, hex_color, size_px),
+        IconSource::Svg(xml) => {
+            let key = (xml.clone(), hex_color.to_string(), size_px);
+            if let Some(tex) = TEXTURE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+                return tex;
+            }
+            let mut colored = xml.replace("currentColor", hex_color);
+            colored = colored.replace("width=\"24\"", &format!("width=\"{}\"", size_px));
+            colored = colored.replace("height=\"24\"", &format!("height=\"{}\"", size_px));
+            let bytes = glib::Bytes::from(colored.as_bytes());
+            let texture = gdk::Texture::from_bytes(&bytes)
+                .unwrap_or_else(|_| icon_texture("puzzle", hex_color, size_px));
+            TEXTURE_CACHE.with(|c| {
+                c.borrow_mut().insert(key, texture.clone());
+            });
+            texture
+        }
     }
 }
 

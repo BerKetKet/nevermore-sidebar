@@ -9,6 +9,10 @@ repository.workspace = true
 name = "nevermore-ui"
 path = "src/main.rs"
 
+[lib]
+name = "nevermore_ui"
+path = "src/lib.rs"
+
 [dependencies]
 nevermore-core = { workspace = true }
 serde = { workspace = true }

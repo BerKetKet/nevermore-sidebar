@@ -62,10 +62,76 @@ enum ThemeCommands {
         /// Name of the theme to set
         name: String,
     },
+    /// Validate a theme TOML file for strict key rules, formats, and WCAG contrast
+    Check {
+        /// Path to theme TOML file
+        path: std::path::PathBuf,
+        /// Output validation results in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print expanded theme TOML derived from a [seed] configuration
+    Expand {
+        /// Path to theme TOML file
+        path: std::path::PathBuf,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    // Local theme validation and expansion don't require resident IPC daemon
+    if let Commands::Theme { action } = &cli.command {
+        match action {
+            ThemeCommands::Check { path, json } => {
+                match nevermore_core::theme::check_theme_file(path) {
+                    Ok(res) => {
+                        if *json {
+                            println!("{}", serde_json::to_string_pretty(&res).unwrap_or_default());
+                        } else if res.valid {
+                            println!("Theme check passed: {}", path.display());
+                            println!(
+                                "  Contrast text_primary:   {:.2}:1 (>= 4.5:1)",
+                                res.contrast_ratios.text_primary_on_bg
+                            );
+                            println!(
+                                "  Contrast text_secondary: {:.2}:1 (>= 3.0:1)",
+                                res.contrast_ratios.text_secondary_on_bg_secondary
+                            );
+                            println!(
+                                "  Contrast accent_color:   {:.2}:1 (>= 3.0:1)",
+                                res.contrast_ratios.accent_on_bg_tertiary
+                            );
+                        } else {
+                            eprintln!("Theme check failed: {}", path.display());
+                            for err in &res.errors {
+                                eprintln!("  - error: {}", err);
+                            }
+                            std::process::exit(1);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("Error checking theme: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            ThemeCommands::Expand { path } => {
+                match nevermore_core::theme::expand_theme_file(path) {
+                    Ok(expanded) => {
+                        println!("{}", expanded);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("Error expanding theme: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     let request = match &cli.command {
         Commands::Toggle => IpcRequest::Toggle,
@@ -85,6 +151,7 @@ fn main() {
         Commands::Theme { action } => match action {
             ThemeCommands::List => IpcRequest::ListThemes,
             ThemeCommands::Set { name } => IpcRequest::SetTheme { name: name.clone() },
+            ThemeCommands::Check { .. } | ThemeCommands::Expand { .. } => unreachable!(),
         },
     };
 

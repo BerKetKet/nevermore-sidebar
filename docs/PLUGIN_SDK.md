@@ -1,7 +1,7 @@
 # Nevermore Sidebar Plugin SDK & LLM Authoring Guide
 
 > **Target Audience:** Developers and AI Coding Assistants (LLMs).  
-> **Purpose:** Build self-contained, modular tab plugins for the Nevermore Wayland sidebar without touching core shell windowing or layer-shell logic.
+> **Purpose:** Build self-contained, modular tab plugins for the Nevermore Wayland sidebar with zero boilerplate, zero manual registration, and complete type safety.
 
 ---
 
@@ -11,217 +11,141 @@ Nevermore Sidebar is built on GTK4 and `gtk4-layer-shell` on Wayland. Every feat
 
 The Nevermore shell enforces strict guardrails on all plugins:
 1. **Width Clamping (`ScrolledWindow`):** The shell wraps every plugin widget inside a true 340px-clamped `gtk4::ScrolledWindow` (`hscrollbar_policy = Never`, `propagate_natural_width = false`, `min_content_width = 340`, `max_content_width = 340`, `hexpand = false`, `size_request = (340, -1)`). Child widgets cannot request a larger natural width and can **never** stretch the sidebar wider than 400px.
-2. **Lifecycle Control:** The shell dispatches `on_show()` and `on_hide()` when the user opens, closes, or switches tabs. Plugins MUST start periodic timers (e.g., polling `/proc`) in `on_show()` and stop them in `on_hide()` to guarantee zero idle CPU drain.
-3. **Theme Propagation:** The shell notifies plugins of live palette changes via `on_theme_changed(&palette)`. Plugins styling GTK widgets with CSS classes (`.nm-card`, `.nm-btn`, etc.) update automatically; custom drawing or terminal widgets adapt dynamically.
+2. **Lifecycle Control:** The shell dispatches `on_show()` and `on_hide()` when the user opens, closes, or switches tabs. Timers registered with `ctx.every(...)` are automatically paused when the tab is hidden and resumed with an immediate refresh on show, ensuring zero background CPU drain. Non-persistent child processes spawned by tabs are automatically cleaned up on hide.
+3. **Theme Propagation:** The shell notifies plugins of live palette changes. Plugins using the `Tone` system and `UiKit` components automatically re-color without restarting or manual paint hooks.
 
 ---
 
-## 2. Plugin Directory Layout
+## 2. Directory Layout & Zero-Edit Auto-Discovery
 
 Every plugin lives in its own directory under `crates/nevermore-ui/src/plugins/<plugin_id>/`:
 
 ```text
 crates/nevermore-ui/src/plugins/<plugin_id>/
-├── plugin.toml     # Static metadata manifest
-└── mod.rs          # Rust module implementing SidebarPlugin
+└── mod.rs          # Rust module exporting SPEC and build(ctx)
 ```
 
-### `plugin.toml` Manifest Format
-
-```toml
-id = "my-plugin"
-title = "My Plugin Title"
-icon = "widgets.svg"    # Bundled SVG icon name or custom filename
-order = 10              # Navigation rail sort order (1..9 reserved for core)
-description = "Brief one-line summary of what this plugin does"
-```
-
-Plugin `id` must strictly match `^[a-z0-9_-]{1,32}$` (disallowing path traversal, uppercase, or special symbols).
+### Auto-Discovery by Cargo (`build.rs`)
+You do **not** need to touch `plugins/mod.rs` or edit registration arrays!  
+At build time, `crates/nevermore-ui/build.rs` automatically scans all subdirectories in `src/plugins/` (ignoring directories with a leading `_` such as `_template`). Any directory exporting `pub const SPEC: PluginSpec` is automatically compiled and registered in the sidebar's navigation rail in ascending `SPEC.order`.
 
 ---
 
-## 3. Core Types & Trait Definitions
+## 3. The Single Prelude Import
 
-### `PluginManifest`
+Plugins import a single module:
 ```rust
-pub struct PluginManifest {
-    pub id: String,
-    pub title: String,
-    pub icon: String,
-    pub order: u32,
-    pub description: String,
-}
+use nevermore_ui::prelude::*;
 ```
+This single import re-exports:
+- All 12 UiKit builder functions: `nm_page`, `nm_card`, `nm_toolbar`, `nm_icon`, `nm_icon_button`, `nm_toggle_icon_button`, `nm_data_label`, `nm_metric_row`, `nm_list`, `nm_list_row`, `nm_empty_state`, `nm_search_entry`, plus `nm_status_dot`, `nm_segmented`.
+- UiKit structs: `TintedIcon`, `IconButton`, `ToggleIconButton`, `DataLabel`, `MetricRow`, `StatusDot`.
+- SDK core types: `PluginContext`, `PluginSpec`, `Tone`, `Cmd`, `CmdResult`, `Tx`, `KeepOnHide`.
+- Essential GTK/GLib helpers: `gtk4::prelude::*`, `glib`, `gio`, `gdk`, `pango`, `Duration`, `serde::{Deserialize, Serialize}`.
 
-### `PluginContext`
-Passed by the shell to `build_widget(&mut self, ctx: &PluginContext)`. Provides read-only access to theme and system capability handles:
+---
+
+## 4. Authoritative Plugin Example
+
 ```rust
-pub struct PluginContext {
-    pub plugin_id: String,
-    pub data_dir: PathBuf,      // $XDG_DATA_HOME/nevermore/plugins/<id>/
-    pub config_dir: PathBuf,    // $XDG_CONFIG_HOME/nevermore/plugins/<id>/
-    pub tmux: TmuxBackend,
-    pub systemd: SystemdTaskBackend,
-    pub kwin: KWinAdapter,
-}
+use nevermore_ui::prelude::*;
 
-impl PluginContext {
-    /// Read-only accessor for active theme palette
-    pub fn theme(&self) -> ThemePalette;
-}
-```
+pub const SPEC: PluginSpec = PluginSpec::new(
+    "quick-note",
+    "Quick Note",
+    "notepad",
+    12,
+    "Quick scratchpad notes plugin",
+);
 
-### `SidebarPlugin` Trait
-```rust
-pub trait SidebarPlugin {
-    /// Returns the static manifest for this plugin
-    fn manifest(&self) -> &PluginManifest;
+pub fn build(ctx: &PluginContext) -> gtk4::Widget {
+    // 1. Data-only label
+    let status = nm_data_label("IDLE");
+    status.set_tone(Tone::Muted);
 
-    /// Builds and returns the root GTK4 widget (clamped by shell container to 340px width)
-    fn build_widget(&mut self, ctx: &PluginContext) -> gtk4::Widget;
+    // 2. Action button with callback
+    let save_btn = nm_icon_button("check", "Save note");
+    let status_clone = status.clone();
+    save_btn.on_click(move || {
+        status_clone.set("SAVED");
+        status_clone.set_tone(Tone::Success);
+    });
 
-    /// Whether this plugin manages its own vertical scroll (e.g. Terminal). Default: false.
-    fn manages_own_scroll(&self) -> bool { false }
+    // 3. Card grouping
+    let card = nm_card([
+        status.widget().clone().upcast::<gtk4::Widget>(),
+        save_btn.widget().clone().upcast::<gtk4::Widget>(),
+    ]);
 
-    /// Invoked when the sidebar opens or tab becomes visible (start timers here)
-    fn on_show(&mut self) {}
+    // 4. Background polling timer (paused on hide)
+    let status_timer = status;
+    ctx.every(Duration::from_secs(10), move || {
+        status_timer.set("SYNCED");
+    });
 
-    /// Invoked when sidebar hides or user switches to another tab (stop timers here)
-    fn on_hide(&mut self) {}
-
-    /// Invoked when the user switches themes at runtime via CLI or IPC
-    fn on_theme_changed(&mut self, _theme: &ThemePalette) {}
+    // 5. Clamped 340px vertical page
+    let page = nm_page([card.upcast::<gtk4::Widget>()]);
+    page.upcast::<gtk4::Widget>()
 }
 ```
 
 ---
 
-## 4. UI Design Rules & Standard CSS Classes
+## 5. PluginContext API Reference
 
-Nevermore enforces a strictly solid, modern dark aesthetic. Do not use blur or transparency on widget bodies.
+Each plugin receives `ctx: &PluginContext` granting capability-checked host access:
 
-Use these standard semantic CSS classes for consistent theme styling:
+### Background Tasks & Mailbox
+- `ctx.mailbox<Msg>(handler) -> Tx<Msg>`: Creates a typed message channel connected to the GTK main thread loop. `Tx<Msg>` is thread-safe and non-blocking (`tx.send(msg)`).
+- `ctx.every(interval, callback)`: Registers a periodic timer that automatically pauses on hide and resumes immediately on show.
+- `ctx.run(cmd, tx, map_fn)`: Spawns `cmd` in a worker thread and sends the mapped result to `tx`.
+- `ctx.stream(cmd, tx, on_line, on_exit)`: Streams standard output and standard error line-by-line.
+- `ctx.daemon(cmd, keep_on_hide)`: Spawns and manages a persistent child process.
 
-| Class Name | Description |
-|---|---|
-| `.nm-card` | Container card with background secondary (`#202024`), border, and border-radius |
-| `.nm-btn` | Standard secondary action button |
-| `.nm-btn-primary` | Accent colored action button (with automatic high-contrast dark or light text) |
-| `.nm-btn-danger` | Danger / destructive action button |
-| `.nm-heading` | Bold section header text |
-| `.nm-muted` | Secondary / muted text label |
-| `.nm-success` | Success colored text |
-| `.nm-warning` | Warning colored text |
+### Safe Subprocess Execution (`Cmd`)
+Never call `std::process::Command::new` directly. The `Cmd` builder handles process group creation (`process_group(0)`), pipe buffering, and enforces strict watchdog timeouts:
+```rust
+let cmd = Cmd::new("playerctl")
+    .arg("status")
+    .timeout(Duration::from_millis(500));
+let res = cmd.execute_blocking(); // Returns CmdResult { code, stdout, stderr, timed_out }
+```
+
+### JSON Data Storage (Atomic & Corrupt-Safe)
+- `ctx.load_json::<T>("state") -> Option<T>`: Loads deserialized state from `XDG_DATA_HOME/nevermore/plugins/<id>/state.json`. If corrupted, automatically renames the file to `.bad.<timestamp>` and returns `None` without crashing.
+- `ctx.save_json("state", &data) -> io::Result<()>`: Atomically writes to a temporary file before renaming.
+
+### Secret Management
+- `ctx.secret_get("token") -> Option<String>`: Retrieves a token from the FreeDesktop Secret Service via `secret-tool`.
+- `ctx.secret_set("token", "secret_val") -> io::Result<()>`: Stores a secret securely with private permissions.
+
+### Scoped CSS Styling
+- `ctx.css("button { border-radius: 8px; }") -> Result<(), String>`: Injects CSS scoped strictly to `.nm-plugin-<id>`. Literal hex or RGB colors are rejected at compile/run time — use `var(--nm-*)` or `@theme_*`.
 
 ---
 
-## 5. Minimal Working Example: `HelloPlugin`
+## 6. The Semantic Tone System
 
-### `crates/nevermore-ui/src/plugins/hello/plugin.toml`
-```toml
-id = "hello"
-title = "Hello World"
-icon = "widgets.svg"
-order = 10
-description = "A minimal working example Nevermore sidebar plugin"
-```
-
-### `crates/nevermore-ui/src/plugins/hello/mod.rs`
-```rust
-use crate::plugin_api::{PluginContext, SidebarPlugin};
-use gtk4::glib;
-use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, Label, Orientation, Widget};
-use nevermore_core::plugin::PluginManifest;
-use std::cell::RefCell;
-use std::rc::Rc;
-
-pub struct HelloPlugin {
-    manifest: PluginManifest,
-    counter: Rc<RefCell<u32>>,
-    label: Option<Label>,
-    timer: RefCell<Option<glib::SourceId>>,
-}
-
-impl HelloPlugin {
-    pub fn new() -> Self {
-        let manifest = PluginManifest::from_toml(include_str!("plugin.toml"))
-            .expect("valid plugin.toml");
-        Self {
-            manifest,
-            counter: Rc::new(RefCell::new(0)),
-            label: None,
-            timer: RefCell::new(None),
-        }
-    }
-}
-
-impl SidebarPlugin for HelloPlugin {
-    fn manifest(&self) -> &PluginManifest {
-        &self.manifest
-    }
-
-    fn build_widget(&mut self, _ctx: &PluginContext) -> Widget {
-        let card = GtkBox::new(Orientation::Vertical, 8);
-        card.add_css_class("nm-card");
-
-        let heading = Label::new(Some("HELLO NEVERMORE"));
-        heading.add_css_class("nm-heading");
-        card.append(&heading);
-
-        let count_lbl = Label::new(Some("Clicks: 0"));
-        count_lbl.add_css_class("nm-muted");
-        self.label = Some(count_lbl.clone());
-        card.append(&count_lbl);
-
-        let btn = Button::with_label("Click Me");
-        btn.add_css_class("nm-btn-primary");
-        let counter_ref = self.counter.clone();
-        btn.connect_clicked(move |_| {
-            let mut c = counter_ref.borrow_mut();
-            *c += 1;
-            count_lbl.set_label(&format!("Clicks: {}", *c));
-        });
-        card.append(&btn);
-
-        card.upcast::<Widget>()
-    }
-
-    fn on_show(&mut self) {
-        // Start any periodic background tick strictly while visible
-        if self.timer.borrow().is_none() {
-            let timer_id = glib::timeout_add_seconds_local(5, move || {
-                glib::ControlFlow::Continue
-            });
-            *self.timer.borrow_mut() = Some(timer_id);
-        }
-    }
-
-    fn on_hide(&mut self) {
-        // Stop timer immediately on hide to avoid CPU drain
-        if let Some(id) = self.timer.borrow_mut().take() {
-            id.remove();
-        }
-    }
-}
-```
+Colors are never hardcoded. Use the semantic `Tone` enum:
+- `Tone::Primary`: Main high-contrast foreground color (`palette.text_primary`).
+- `Tone::Secondary`: Secondary informational text/icon (`palette.text_secondary`).
+- `Tone::Muted`: Subtle dim/disabled state (`palette.text_secondary` at 60%).
+- `Tone::Accent`: Interactive highlights and active state (`palette.accent_color`).
+- `Tone::Danger`: Errors, failures, destructive states (`palette.danger_color`).
+- `Tone::Success`: Positive confirmations, online states (`palette.success_color`).
+- `Tone::Warning`: Warnings, alerts (`palette.warning_color`).
 
 ---
 
-## 6. Registering Your Plugin
+## 7. Contract Testing & Headless Verification
 
-1. In `crates/nevermore-ui/src/plugins/mod.rs`, declare your module:
-```rust
-pub mod hello;
-```
-
-2. Inside `create_default_registry()` in `crates/nevermore-ui/src/plugins/mod.rs`, register your plugin:
-```rust
-let ctx_hello = PluginContext::new("hello", theme.clone(), tmux.clone(), systemd.clone(), kwin.clone());
-registry.register(Box::new(hello::HelloPlugin::new()), &ctx_hello);
-```
-
-3. Dynamic tabs are automatically registered with the state machine and IPC. You can immediately switch to your new plugin via the navigation rail or CLI:
+Every plugin is audited by the automated contract harness:
 ```bash
-nevermore show hello
+cargo test -p nevermore-ui --test plugin_contract
 ```
+This contract harness executes completely headlessly without requiring a live Wayland compositor or X11 server:
+1. **Static Linter:** Scans for forbidden primitives (`std::process::Command`, `timeout_add`, `tokio::`, `chrono::`, `sleep`, emojis).
+2. **Manifest Validator:** Ensures unique IDs matching `^[a-z0-9-]+$` and verified Lucide icons.
+3. **Text-Free Chrome Walk:** Verifies that no static English labels exist without the `.nm-data` CSS class.
+4. **Lifecycle Pause Verification:** Confirms timers cleanly pause on hide and resume on show.
+5. **Documentation Sync:** Validates that all public SDK symbols are fully documented.

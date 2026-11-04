@@ -90,6 +90,181 @@ pub fn is_valid_solid_hex_color(s: &str) -> bool {
     s[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Oklab {
+    pub l: f64,
+    pub a: f64,
+    pub b: f64,
+}
+
+pub fn srgb_to_linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+pub fn linear_to_srgb(c: f64) -> f64 {
+    if c <= 0.0031308 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+pub fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {
+    let lr = srgb_to_linear(r as f64 / 255.0);
+    let lg = srgb_to_linear(g as f64 / 255.0);
+    let lb = srgb_to_linear(b as f64 / 255.0);
+
+    let l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
+    let m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
+    let s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
+
+    let l_ = l.cbrt();
+    let m_ = m.cbrt();
+    let s_ = s.cbrt();
+
+    Oklab {
+        l: 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+        a: 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+        b: 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+    }
+}
+
+pub fn oklab_to_rgb(lab: Oklab) -> (u8, u8, u8) {
+    let l_ = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
+    let m_ = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
+    let s_ = lab.l - 0.0894841775 * lab.a - 1.2914855480 * lab.b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    let lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let lb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+
+    let r = (linear_to_srgb(lr).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = (linear_to_srgb(lg).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (linear_to_srgb(lb).clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    (r, g, b)
+}
+
+pub fn hex_to_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    let clean = hex.trim().strip_prefix('#')?;
+    if clean.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&clean[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&clean[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&clean[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+pub fn rgb_to_hex(r: u8, g: u8, b: u8) -> String {
+    format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
+pub fn mix_hex_oklab(hex1: &str, hex2: &str, t: f64) -> String {
+    let (r1, g1, b1) = hex_to_rgb(hex1).unwrap_or((0, 0, 0));
+    let (r2, g2, b2) = hex_to_rgb(hex2).unwrap_or((255, 255, 255));
+    let o1 = rgb_to_oklab(r1, g1, b1);
+    let o2 = rgb_to_oklab(r2, g2, b2);
+
+    let o_mixed = Oklab {
+        l: o1.l + (o2.l - o1.l) * t,
+        a: o1.a + (o2.a - o1.a) * t,
+        b: o1.b + (o2.b - o1.b) * t,
+    };
+    let (r, g, b) = oklab_to_rgb(o_mixed);
+    rgb_to_hex(r, g, b)
+}
+
+pub fn adjust_lightness_oklab(hex: &str, delta_l: f64) -> String {
+    let (r, g, b) = hex_to_rgb(hex).unwrap_or((0, 0, 0));
+    let mut o = rgb_to_oklab(r, g, b);
+    o.l = (o.l + delta_l).clamp(0.0, 1.0);
+    let (ro, go, bo) = oklab_to_rgb(o);
+    rgb_to_hex(ro, go, bo)
+}
+
+pub fn relative_luminance(hex: &str) -> f64 {
+    if let Some((r, g, b)) = hex_to_rgb(hex) {
+        let lr = srgb_to_linear(r as f64 / 255.0);
+        let lg = srgb_to_linear(g as f64 / 255.0);
+        let lb = srgb_to_linear(b as f64 / 255.0);
+        0.2126 * lr + 0.7152 * lg + 0.0722 * lb
+    } else {
+        0.0
+    }
+}
+
+pub fn contrast_ratio(hex1: &str, hex2: &str) -> f64 {
+    let l1 = relative_luminance(hex1);
+    let l2 = relative_luminance(hex2);
+    let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut dp = vec![vec![0; b_chars.len() + 1]; a_chars.len() + 1];
+
+    for i in 0..=a_chars.len() {
+        dp[i][0] = i;
+    }
+    for j in 0..=b_chars.len() {
+        dp[0][j] = j;
+    }
+
+    for i in 1..=a_chars.len() {
+        for j in 1..=b_chars.len() {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[a_chars.len()][b_chars.len()]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedConfig {
+    pub bg: String,
+    pub fg: String,
+    pub accent: String,
+    #[serde(default)]
+    pub danger: Option<String>,
+    #[serde(default)]
+    pub success: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeCheckResult {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub contrast_ratios: ThemeContrastRatios,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeContrastRatios {
+    pub text_primary_on_bg: f64,
+    pub text_secondary_on_bg_secondary: f64,
+    pub accent_on_bg_tertiary: f64,
+}
+
 pub fn sanitize_font(s: &str) -> String {
     s.replace(['"', ';', '{', '}', '\\'], "")
         .replace("/*", "")
@@ -143,6 +318,9 @@ pub struct ThemePalette {
     #[serde(default = "default_name")]
     pub name: String,
 
+    #[serde(default)]
+    pub seed: Option<SeedConfig>,
+
     #[serde(default = "default_bg_primary")]
     pub bg_primary: String,
     #[serde(default = "default_bg_secondary")]
@@ -187,6 +365,7 @@ impl Default for ThemePalette {
     fn default() -> Self {
         Self {
             name: default_name(),
+            seed: None,
             bg_primary: default_bg_primary(),
             bg_secondary: default_bg_secondary(),
             bg_tertiary: default_bg_tertiary(),
@@ -210,11 +389,87 @@ impl Default for ThemePalette {
 }
 
 impl ThemePalette {
+    pub fn from_seed(seed: &SeedConfig) -> Self {
+        let bg = seed.bg.trim().to_ascii_lowercase();
+        let fg = seed.fg.trim().to_ascii_lowercase();
+        let accent = seed.accent.trim().to_ascii_lowercase();
+        let danger = seed
+            .danger
+            .as_deref()
+            .unwrap_or("#ef4444")
+            .trim()
+            .to_ascii_lowercase();
+        let success = seed
+            .success
+            .as_deref()
+            .unwrap_or("#22c55e")
+            .trim()
+            .to_ascii_lowercase();
+        let warning = seed
+            .warning
+            .as_deref()
+            .unwrap_or("#f59e0b")
+            .trim()
+            .to_ascii_lowercase();
+
+        let bg_primary = bg.clone();
+        let bg_secondary = mix_hex_oklab(&bg, &fg, 0.05);
+        let bg_tertiary = mix_hex_oklab(&bg, &fg, 0.10);
+        let border_color = mix_hex_oklab(&bg, &fg, 0.16);
+        let text_primary = fg.clone();
+        let text_secondary = mix_hex_oklab(&fg, &bg, 0.35);
+
+        let term_bg = bg.clone();
+        let term_fg = fg.clone();
+        let term_cursor = accent.clone();
+
+        let mut term_palette = default_term_palette();
+        term_palette[0] = bg;
+        term_palette[1] = danger.clone();
+        term_palette[2] = success.clone();
+        term_palette[3] = warning.clone();
+        term_palette[4] = accent.clone();
+        term_palette[5] = mix_hex_oklab(&accent, &danger, 0.45);
+        term_palette[6] = mix_hex_oklab(&accent, &success, 0.45);
+        term_palette[7] = mix_hex_oklab(&fg, &bg_primary, 0.15);
+        term_palette[8] = border_color.clone();
+        term_palette[9] = adjust_lightness_oklab(&danger, 0.10);
+        term_palette[10] = adjust_lightness_oklab(&success, 0.10);
+        term_palette[11] = adjust_lightness_oklab(&warning, 0.10);
+        term_palette[12] = adjust_lightness_oklab(&accent, 0.10);
+        term_palette[13] = adjust_lightness_oklab(&term_palette[5], 0.10);
+        term_palette[14] = adjust_lightness_oklab(&term_palette[6], 0.10);
+        term_palette[15] = fg;
+
+        Self {
+            name: "seed-derived".to_string(),
+            seed: Some(seed.clone()),
+            bg_primary,
+            bg_secondary,
+            bg_tertiary,
+            border_color,
+            text_primary,
+            text_secondary,
+            accent_color: accent,
+            danger_color: danger,
+            success_color: success,
+            warning_color: warning,
+            ui_font: default_ui_font(),
+            mono_font: default_mono_font(),
+            mono_font_size: default_mono_font_size(),
+            border_radius_px: default_border_radius_px(),
+            term_bg,
+            term_fg,
+            term_cursor,
+            term_palette,
+        }
+    }
+
     pub fn from_toml(content: &str) -> Result<Self, String> {
         Ok(Self::from_toml_str_lossy(content))
     }
 
-    /// Hardened lossy parser: validates every field per-field and falls back safely to Nevermore Dark defaults.
+    /// Hardened lossy parser: validates every field per-field and falls back safely to Nevermore Dark defaults or [seed] derivations.
     pub fn from_toml_str_lossy(content: &str) -> Self {
         let value = match toml::from_str::<toml::Value>(content) {
             Ok(v) => v,
@@ -237,6 +492,37 @@ impl ThemePalette {
 
         let mut palette = Self::default();
 
+        // 0. Seed configuration
+        if let Some(seed_val) = table.get("seed") {
+            if let Some(seed_tab) = seed_val.as_table() {
+                let bg = seed_tab
+                    .get("bg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("#18181b");
+                let fg = seed_tab
+                    .get("fg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("#f4f4f5");
+                let accent = seed_tab
+                    .get("accent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("#0a84ff");
+                let danger = seed_tab.get("danger").and_then(|v| v.as_str());
+                let success = seed_tab.get("success").and_then(|v| v.as_str());
+                let warning = seed_tab.get("warning").and_then(|v| v.as_str());
+
+                let seed = SeedConfig {
+                    bg: bg.to_string(),
+                    fg: fg.to_string(),
+                    accent: accent.to_string(),
+                    danger: danger.map(|s| s.to_string()),
+                    success: success.map(|s| s.to_string()),
+                    warning: warning.map(|s| s.to_string()),
+                };
+                palette = Self::from_seed(&seed);
+            }
+        }
+
         // 1. Theme name
         if let Some(v) = table.get("name") {
             if let Some(s) = v.as_str() {
@@ -250,7 +536,7 @@ impl ThemePalette {
         }
 
         // Helper for color fields
-        let parse_color = |key: &str, default_val: &str| -> String {
+        let parse_color = |key: &str, current_val: &str| -> String {
             if let Some(val) = table.get(key) {
                 if let Some(s) = val.as_str() {
                     let trimmed = s.trim();
@@ -259,33 +545,33 @@ impl ThemePalette {
                     } else {
                         eprintln!(
                             "[nevermore-theme] warning: invalid solid hex color '{}' for '{}', falling back to '{}'",
-                            trimmed, key, default_val
+                            trimmed, key, current_val
                         );
                     }
                 } else {
                     eprintln!(
                         "[nevermore-theme] warning: '{}' is not a string, falling back to '{}'",
-                        key, default_val
+                        key, current_val
                     );
                 }
             }
-            default_val.to_string()
+            current_val.to_string()
         };
 
-        palette.bg_primary = parse_color("bg_primary", &default_bg_primary());
-        palette.bg_secondary = parse_color("bg_secondary", &default_bg_secondary());
-        palette.bg_tertiary = parse_color("bg_tertiary", &default_bg_tertiary());
-        palette.border_color = parse_color("border_color", &default_border_color());
-        palette.text_primary = parse_color("text_primary", &default_text_primary());
-        palette.text_secondary = parse_color("text_secondary", &default_text_secondary());
-        palette.accent_color = parse_color("accent_color", &default_accent_color());
-        palette.danger_color = parse_color("danger_color", &default_danger_color());
-        palette.success_color = parse_color("success_color", &default_success_color());
-        palette.warning_color = parse_color("warning_color", &default_warning_color());
+        palette.bg_primary = parse_color("bg_primary", &palette.bg_primary);
+        palette.bg_secondary = parse_color("bg_secondary", &palette.bg_secondary);
+        palette.bg_tertiary = parse_color("bg_tertiary", &palette.bg_tertiary);
+        palette.border_color = parse_color("border_color", &palette.border_color);
+        palette.text_primary = parse_color("text_primary", &palette.text_primary);
+        palette.text_secondary = parse_color("text_secondary", &palette.text_secondary);
+        palette.accent_color = parse_color("accent_color", &palette.accent_color);
+        palette.danger_color = parse_color("danger_color", &palette.danger_color);
+        palette.success_color = parse_color("success_color", &palette.success_color);
+        palette.warning_color = parse_color("warning_color", &palette.warning_color);
 
-        palette.term_bg = parse_color("term_bg", &default_term_bg());
-        palette.term_fg = parse_color("term_fg", &default_term_fg());
-        palette.term_cursor = parse_color("term_cursor", &default_term_cursor());
+        palette.term_bg = parse_color("term_bg", &palette.term_bg);
+        palette.term_fg = parse_color("term_fg", &palette.term_fg);
+        palette.term_cursor = parse_color("term_cursor", &palette.term_cursor);
 
         // Fonts
         if let Some(v) = table.get("ui_font") {
@@ -338,7 +624,7 @@ impl ThemePalette {
         }
 
         // Terminal 16-color palette
-        let default_palette = default_term_palette();
+        let default_palette = palette.term_palette.clone();
         let mut final_palette = default_palette.clone();
         if let Some(v) = table.get("term_palette") {
             if let Some(arr) = v.as_array() {
@@ -863,6 +1149,187 @@ pub fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+pub fn check_theme_file(path: &std::path::Path) -> Result<ThemeCheckResult, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let toml_val: toml::Value = toml::from_str(&content)
+        .map_err(|e| format!("Invalid TOML syntax in {}: {}", path.display(), e))?;
+    let table = toml_val
+        .as_table()
+        .ok_or_else(|| "Root of TOML is not a table".to_string())?;
+
+    let mut errors = Vec::new();
+    let warnings = Vec::new();
+
+    let known_keys = [
+        "name",
+        "seed",
+        "bg_primary",
+        "bg_secondary",
+        "bg_tertiary",
+        "border_color",
+        "text_primary",
+        "text_secondary",
+        "accent_color",
+        "danger_color",
+        "danger",
+        "success_color",
+        "success",
+        "warning_color",
+        "warning",
+        "ui_font",
+        "mono_font",
+        "mono_font_size",
+        "border_radius_px",
+        "term_bg",
+        "term_fg",
+        "term_cursor",
+        "term_palette",
+    ];
+
+    let seed_known_keys = ["bg", "fg", "accent", "danger", "success", "warning"];
+
+    for key in table.keys() {
+        if !known_keys.contains(&key.as_str()) {
+            let mut best_match = "";
+            let mut min_dist = usize::MAX;
+            for candidate in known_keys {
+                let dist = levenshtein_distance(key, candidate);
+                if dist < min_dist {
+                    min_dist = dist;
+                    best_match = candidate;
+                }
+            }
+            if min_dist <= 3 {
+                errors.push(format!(
+                    "Unknown key '{}', did you mean '{}'?",
+                    key, best_match
+                ));
+            } else {
+                errors.push(format!("Unknown key '{}'", key));
+            }
+        }
+    }
+
+    if let Some(seed_val) = table.get("seed") {
+        if let Some(seed_tab) = seed_val.as_table() {
+            for key in seed_tab.keys() {
+                if !seed_known_keys.contains(&key.as_str()) {
+                    let mut best_match = "";
+                    let mut min_dist = usize::MAX;
+                    for candidate in seed_known_keys {
+                        let dist = levenshtein_distance(key, candidate);
+                        if dist < min_dist {
+                            min_dist = dist;
+                            best_match = candidate;
+                        }
+                    }
+                    if min_dist <= 3 {
+                        errors.push(format!(
+                            "Unknown key '[seed].{}', did you mean '[seed].{}'?",
+                            key, best_match
+                        ));
+                    } else {
+                        errors.push(format!("Unknown key '[seed].{}'", key));
+                    }
+                }
+            }
+            for required in ["bg", "fg", "accent"] {
+                if !seed_tab.contains_key(required) {
+                    errors.push(format!("Missing required key '[seed].{}'", required));
+                }
+            }
+        } else {
+            errors.push("'[seed]' must be a table".to_string());
+        }
+    }
+
+    // Validate solid hex formats for top-level keys
+    let color_keys = [
+        "bg_primary",
+        "bg_secondary",
+        "bg_tertiary",
+        "border_color",
+        "text_primary",
+        "text_secondary",
+        "accent_color",
+        "danger_color",
+        "success_color",
+        "warning_color",
+        "term_bg",
+        "term_fg",
+        "term_cursor",
+    ];
+    for k in color_keys {
+        if let Some(val) = table.get(k) {
+            if let Some(s) = val.as_str() {
+                if !is_valid_solid_hex_color(s.trim()) {
+                    errors.push(format!("Invalid solid hex color '{}' for key '{}'", s, k));
+                }
+            } else {
+                errors.push(format!("Key '{}' must be a solid hex string", k));
+            }
+        }
+    }
+
+    let palette = ThemePalette::from_toml_str_lossy(&content);
+
+    // Dark-theme luminance ceiling
+    let lum_bg = relative_luminance(&palette.bg_primary);
+    if lum_bg >= 0.15 {
+        errors.push(format!(
+            "bg_primary relative luminance is {:.3} (exceeds dark-theme ceiling 0.150)",
+            lum_bg
+        ));
+    }
+
+    // Contrast checks
+    let c_text = contrast_ratio(&palette.text_primary, &palette.bg_primary);
+    if c_text < 4.5 {
+        errors.push(format!(
+            "text_primary on bg_primary contrast is {:.2}:1 (fails WCAG AA 4.5:1)",
+            c_text
+        ));
+    }
+
+    let c_sec = contrast_ratio(&palette.text_secondary, &palette.bg_secondary);
+    if c_sec < 3.0 {
+        errors.push(format!(
+            "text_secondary on bg_secondary contrast is {:.2}:1 (fails WCAG UI 3.0:1)",
+            c_sec
+        ));
+    }
+
+    let c_acc = contrast_ratio(&palette.accent_color, &palette.bg_tertiary);
+    if c_acc < 3.0 {
+        errors.push(format!(
+            "accent_color on bg_tertiary contrast is {:.2}:1 (fails WCAG UI 3.0:1)",
+            c_acc
+        ));
+    }
+
+    let contrast_ratios = ThemeContrastRatios {
+        text_primary_on_bg: c_text,
+        text_secondary_on_bg_secondary: c_sec,
+        accent_on_bg_tertiary: c_acc,
+    };
+
+    Ok(ThemeCheckResult {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+        contrast_ratios,
+    })
+}
+
+pub fn expand_theme_file(path: &std::path::Path) -> Result<String, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let palette = ThemePalette::from_toml_str_lossy(&content);
+    toml::to_string_pretty(&palette)
+        .map_err(|e| format!("Failed to serialize expanded theme: {}", e))
+}
+
 /// Auto-installs / refreshes built-in starter themes into $XDG_CONFIG_HOME/nevermore/themes/
 pub fn install_bundled_themes() -> Result<(), String> {
     let t_dir = themes_dir();
@@ -1137,5 +1604,92 @@ mod tests {
         assert!(!pal.ui_font.contains('"'));
         assert_eq!(pal.bg_primary, "#18181b");
         assert_eq!(pal.accent_color, "#0a84ff");
+    }
+
+    #[test]
+    fn test_seed_derivation_oklab() {
+        let seed_toml = r##"
+            name = "seed-test"
+            [seed]
+            bg = "#121214"
+            fg = "#e4e4e7"
+            accent = "#38bdf8"
+        "##;
+        let pal = ThemePalette::from_toml_str_lossy(seed_toml);
+        assert_eq!(pal.name, "seed-test");
+        assert_eq!(pal.bg_primary, "#121214");
+        assert_eq!(pal.text_primary, "#e4e4e7");
+        assert_eq!(pal.accent_color, "#38bdf8");
+        assert_eq!(pal.term_palette.len(), 16);
+        assert_ne!(pal.bg_secondary, pal.bg_primary);
+        assert_ne!(pal.bg_tertiary, pal.bg_secondary);
+        assert_ne!(pal.text_secondary, pal.text_primary);
+
+        // Explicit override over seed
+        let override_toml = r##"
+            name = "seed-override"
+            accent_color = "#f43f5e"
+            [seed]
+            bg = "#121214"
+            fg = "#e4e4e7"
+            accent = "#38bdf8"
+        "##;
+        let pal_ov = ThemePalette::from_toml_str_lossy(override_toml);
+        assert_eq!(pal_ov.accent_color, "#f43f5e");
+    }
+
+    #[test]
+    fn test_theme_check_and_expand() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("nevermore_test_theme_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let valid_file = temp_dir.join("valid.toml");
+        std::fs::write(
+            &valid_file,
+            r##"
+            name = "valid-seed"
+            [seed]
+            bg = "#18181b"
+            fg = "#f4f4f5"
+            accent = "#0a84ff"
+            "##,
+        )
+        .unwrap();
+
+        let check_res = check_theme_file(&valid_file).unwrap();
+        assert!(check_res.valid, "Errors: {:?}", check_res.errors);
+        assert!(check_res.contrast_ratios.text_primary_on_bg >= 4.5);
+        assert!(check_res.contrast_ratios.text_secondary_on_bg_secondary >= 3.0);
+        assert!(check_res.contrast_ratios.accent_on_bg_tertiary >= 3.0);
+
+        let expanded = expand_theme_file(&valid_file).unwrap();
+        assert!(expanded.contains("term_palette"));
+        assert!(expanded.contains("#0a84ff"));
+
+        // Test typo suggestion with Levenshtein distance
+        let typo_file = temp_dir.join("typo.toml");
+        std::fs::write(
+            &typo_file,
+            r##"
+            name = "typo"
+            accent_colr = "#0a84ff"
+            bg_primary = "#ffffff"
+            "##,
+        )
+        .unwrap();
+
+        let typo_res = check_theme_file(&typo_file).unwrap();
+        assert!(!typo_res.valid);
+        assert!(typo_res
+            .errors
+            .iter()
+            .any(|e| e.contains("did you mean 'accent_color'?")));
+        // Should also fail dark ceiling
+        assert!(typo_res
+            .errors
+            .iter()
+            .any(|e| e.contains("exceeds dark-theme ceiling")));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

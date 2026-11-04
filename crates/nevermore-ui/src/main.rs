@@ -1,8 +1,4 @@
-mod icons;
-mod ipc_server;
-mod nav_rail;
-mod plugin_api;
-mod plugins;
+use nevermore_ui::{icons, ipc_server, nav_rail, plugins};
 
 use gtk4::accessible::Property;
 use gtk4::prelude::*;
@@ -112,7 +108,7 @@ fn main() {
             .build();
 
         hot_edge_window.init_layer_shell();
-        hot_edge_window.set_layer(Layer::Overlay);
+        hot_edge_window.set_layer(Layer::Top);
         hot_edge_window.set_exclusive_zone(-1);
         hot_edge_window.set_anchor(Edge::Right, true);
         hot_edge_window.set_anchor(Edge::Top, true);
