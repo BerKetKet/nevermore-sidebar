@@ -7,8 +7,9 @@
 
 ## 1. Architectural Highlights
 
-- **Wayland Native Layer-Shell:** Anchored to the right edge with `Layer::Top` and `exclusive_zone = -1`, guaranteeing full 1080p height without stealing clicks from or occluding active fullscreen games.
-- **Zero-Context Plugin SDK (`nevermore_ui::prelude::*`):** Any LLM or developer can write a self-contained ~50-line plugin in `crates/nevermore-ui/src/plugins/<id>/mod.rs` with automatic discovery (`build.rs`), automatic lifecycle-managed timers (`ctx.every`), background execution (`ctx.run`, `ctx.daemon`), and typed actor mailboxes (`ctx.mailbox`).
+- **Wayland Native Layer-Shell:** Anchored to the right edge with `Layer::Overlay` and `exclusive_zone = -1`, guaranteeing full 1080p height and pointer-hover priority across the desktop.
+- **Companion Side-Blade (500x1080):** Dedicated companion blade window on `Layer::Overlay` anchored at `margin_right = 400` with pointer-leave auto-hide coordination for deep content (full MIME email reader, inline RFC 2822 reply composer).
+- **Zero-Context Plugin SDK (`nevermore_ui::prelude::*`):** Any LLM or developer can write a self-contained ~50-line plugin in `crates/nevermore-ui/src/plugins/<id>/mod.rs` with automatic discovery (`build.rs`), automatic lifecycle-managed timers (`ctx.every`, `ctx.after_delay`), background execution (`ctx.run`, `ctx.daemon`), and typed actor mailboxes (`ctx.mailbox`).
 - **Text-Free Icon UI Chrome:** All navigation, header controls, and status badges use crisp, theme-tinted Lucide SVG icons (`nm_icon`, `nm_icon_button`, `Tone`) and accessible tooltips. Only actual user and system data is displayed as text (`.nm-data`).
 - **Crash Resilience & Session Survival:** Sub-100ms show/hide transitions, auto-restarting systemd user service (`nevermore.service`), zero memory/FD leaks, and full terminal session preservation across UI restarts via detached `tmux -L nevermore`.
 - **Perceptual OKLab Seed Theme Engine:** Generates complete 15-color WCAG 2.1-compliant GTK4 stylesheets from a single brand hex code or standard TOML palettes.
@@ -29,13 +30,13 @@
 
 1. **Terminal (`terminal`):** Embedded VTE terminal connected to a persistent `tmux -L nevermore` session with tab navigation, hotkey integration, and zero state loss across crashes.
 2. **Widgets (`widgets`):** Real-time system monitoring (CPU, RAM, Swap), live clock, and quick system toggles.
-3. **Notifications (`notifications`):** Live FreeDesktop notification daemon listener with image-data parsing, chronological feed, and native D-Bus Do Not Disturb (DND) suppression (`Inhibit`).
-4. **Notepad (`notepad`):** Zero-friction text scratchpad with instantaneous atomic auto-save and corruption recovery.
-5. **Media Player (`media`):** Hardware-accelerated audio/video playback via `mpv --hwdec=vaapi` (Intel Iris Plus 655 iGPU) with IPC playback controls, playlist scan (`~/Music`, `~/Videos`), and timestamp resume across restarts.
+3. **Notifications (`notifications`):** Live FreeDesktop notification daemon listener with image-data parsing, clickable cards with KWin window activation, URL opener, per-row dismiss, and native D-Bus Do Not Disturb (DND) suppression (`Inhibit`).
+4. **Notepad (`notepad`):** Multi-note manager in `notes.json` with auto-migration from legacy text files, Wayland clipboard paste/copy, auto-derived 18-character titles, horizontal note switcher pills, and two-step danger delete.
+5. **Music Player (`music`):** Full MPD controller with 4 views (Now Playing with live audio quality badge and mode toggles; 100-track Queue with save/shuffle/clear; Synced/plain lyrics with local sidecar and LRCLIB fetch; Library search and playlist manager) + Euphonica integration.
 6. **Gemini AI (`gemini`):** Conversational AI assistant with Freedesktop Secret Service credential storage (`secret-tool`), persistent chat history, and non-blocking streaming.
 7. **YouTube (`youtube`):** Background video search via `yt-dlp` and instant hardware-accelerated playback via `mpv`.
 8. **VPN Manager (`vpn`):** Real-time Cloudflare WARP client status/toggle (`warp-cli`) and NetworkManager WireGuard profile switcher (`nmcli`).
-9. **Gmail Inbox (`email`):** Official Gmail REST API v1 unread message inbox, unread badge, per-item cards with sender/subject/snippet, and one-click thread open in browser or mark-as-read.
+9. **Gmail Inbox (`email`):** Official Gmail REST API v1 unread message inbox, 6 row actions, and 500x1080 companion side-blade with full MIME reader and inline RFC 2822 reply composer.
 
 ---
 
@@ -87,7 +88,7 @@ Nevermore maintains strict automated verification gates:
 # 1. Plugin SDK Contract Verification (Manifests, Icons, Linter, Widget Tree, Timers)
 DISPLAY="" WAYLAND_DISPLAY="" cargo test -p nevermore-ui --test plugin_contract
 
-# 2. Workspace Integration & Unit Tests (41/41 passing)
+# 2. Workspace Integration & Unit Tests (54/54 passing)
 cargo test --workspace --locked
 
 # 3. Static Analysis & Linting (0 warnings enforced)

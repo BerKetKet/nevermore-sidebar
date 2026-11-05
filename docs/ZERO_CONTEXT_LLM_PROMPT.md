@@ -87,9 +87,11 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 | `nm_list()` | `gtk4::ListBox` | Compact styled list container. Append rows via `.append(&row)`. |
 | `nm_list_row(icon, pri, sec, actions)` | `gtk4::ListBoxRow` | Data list item with icon, primary text, optional secondary text, and action buttons. |
 | `nm_empty_state(icon, tooltip)` | `gtk4::Box` | Centered 32px muted icon for empty states without non-data text. |
+| `nm_prompt_entry(icon, tip, on_submit)` | `gtk4::Box` | Enter/submit-only prompt entry that clears on submission. |
 | `nm_search_entry(tooltip, debounced_fn)` | `gtk4::Box` | Search entry with search icon, clear button, and 200ms debounce. |
 | `nm_status_dot(tone)` | `StatusDot` | 8x8 circular status indicator. Method: `.set_tone(Tone)`. |
 | `nm_segmented(pairs, on_select)` | `gtk4::Box` | Multi-option icon-only segmented control. |
+| `nm_segmented_control(pairs, init, on_select)` | `SegmentedControl` | Segmented control with programmatic `.set_active(idx)` selection. |
 
 ---
 
@@ -113,9 +115,14 @@ Each plugin receives `ctx: &PluginContext` granting safe host capabilities:
 ### Typed Mailbox & Background Tasks
 - `ctx.mailbox<Msg>(handler) -> Tx<Msg>`: Creates a channel connecting background messages to the UI thread dispatcher. `Tx<Msg>` is `Clone + Send`.
 - `ctx.every(interval, callback)`: Periodic timer paused automatically when tab is hidden.
+- `ctx.after_delay(duration, callback)`: Single-shot timer (e.g. for debounced sliders/inputs).
 - `ctx.run(cmd, tx, map_fn)`: Runs `Cmd` in background thread and dispatches result to mailbox.
 - `ctx.stream(cmd, tx, on_line, on_exit)`: Runs command streaming stdout/stderr line-by-line.
 - `ctx.daemon(cmd, keep_on_hide)`: Spawns and manages a long-running background child process.
+
+### Companion Side-Blade (500x1080 Overlay Window)
+- `ctx.open_companion_blade(title, widget)`: Opens the dedicated 500x1080 companion side-blade at `margin_right = 400` on `Layer::Overlay` without auto-hiding the 400px main sidebar.
+- `ctx.close_companion_blade()`: Closes the companion side-blade.
 
 ### Safe Command Builder (`Cmd`)
 ```rust
