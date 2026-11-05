@@ -1183,6 +1183,10 @@ window {{
     padding: 8px 10px;
 }}
 
+.notif-card:hover {{
+    border-color: {accent_color};
+}}
+
 .notif-app-name {{
     font-weight: 700;
     font-size: 11px;
@@ -1246,6 +1250,27 @@ window {{
 .notepad-status {{
     font-size: 10px;
     color: {text_secondary};
+}}
+
+.note-pill {{
+    background-color: {bg_secondary};
+    color: {text_secondary};
+    border: 1px solid {border_color};
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+}}
+
+.note-pill:hover {{
+    border-color: {accent_color};
+    color: {text_primary};
+}}
+
+.note-pill.active {{
+    background-color: {bg_tertiary};
+    border-color: {accent_color};
+    color: {accent_color};
+    font-weight: 600;
 }}
 "#,
             name = clean_name,

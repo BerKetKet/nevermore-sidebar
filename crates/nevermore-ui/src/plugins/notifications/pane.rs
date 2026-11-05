@@ -20,6 +20,16 @@ use std::rc::{Rc, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+fn extract_first_url(text: &str) -> Option<String> {
+    for word in text.split_whitespace() {
+        let trimmed = word.trim_matches(['(', ')', '[', ']', '<', '>', '"', '\'', ',', '.']);
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
 pub type NotificationItem = ParsedNotification;
 
 pub struct NotificationsPane {
@@ -196,8 +206,33 @@ impl NotificationsPane {
         time_lbl.add_css_class("notif-time");
         time_lbl.set_xalign(1.0);
 
+        let btn_dismiss = Button::new();
+        btn_dismiss.add_css_class("icon-btn");
+        btn_dismiss.set_tooltip_text(Some("Dismiss"));
+        btn_dismiss.update_property(&[Property::Label("Dismiss")]);
+        icons::set_button_icon(
+            &btn_dismiss,
+            "x",
+            &self.current_theme.borrow().text_secondary,
+            14,
+        );
+
+        let card_weak = card.downgrade();
+        let list_weak = self.list_box.downgrade();
+        let empty_clone = self.empty_box.clone();
+
+        btn_dismiss.connect_clicked(move |_| {
+            if let (Some(c), Some(l)) = (card_weak.upgrade(), list_weak.upgrade()) {
+                l.remove(&c);
+                if l.first_child().is_none() {
+                    l.append(&empty_clone);
+                }
+            }
+        });
+
         header_row.append(&app_lbl);
         header_row.append(&time_lbl);
+        header_row.append(&btn_dismiss);
 
         let summary_lbl = Label::new(Some(&item.summary));
         summary_lbl.add_css_class("notif-summary");
@@ -215,16 +250,37 @@ impl NotificationsPane {
             card.append(&body_lbl);
         }
 
-        // Click on notification card raises application window non-blocking (A2)
+        // Click on notification card raises application window non-blocking and opens URL if present (F4)
         let de = item.desktop_entry.clone();
+        let app_name = item.app_name.clone();
+        let summary_text = item.summary.clone();
+        let body_text = item.body.clone();
         let kwin = self.kwin.clone();
         let click_gesture = GestureClick::new();
         click_gesture.connect_released(move |_, _, _, _| {
             let de_clone = de.clone();
+            let app_name_clone = app_name.clone();
+            let full_text = format!("{} {}", summary_text, body_text);
             let kwin_clone = kwin.clone();
+
             glib::spawn_future_local(async move {
                 let _ = gio::spawn_blocking(move || {
-                    let _ = kwin_clone.raise_application(&de_clone);
+                    if let Some(url) = extract_first_url(&full_text) {
+                        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                    }
+
+                    let mut raised = false;
+                    if !de_clone.is_empty() {
+                        raised = kwin_clone.raise_application(&de_clone).is_ok();
+                    }
+                    if !raised && !app_name_clone.is_empty() {
+                        raised = kwin_clone.raise_application(&app_name_clone).is_ok();
+                    }
+                    if !raised && !de_clone.is_empty() {
+                        let _ = std::process::Command::new("gtk-launch")
+                            .arg(&de_clone)
+                            .spawn();
+                    }
                 })
                 .await;
             });
@@ -488,5 +544,23 @@ impl NotificationsPane {
                 thread::sleep(Duration::from_secs(2));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_first_url() {
+        assert_eq!(
+            extract_first_url("Check out https://github.com/nevermore for details!"),
+            Some("https://github.com/nevermore".to_string())
+        );
+        assert_eq!(
+            extract_first_url("Visit (http://example.com/test) now"),
+            Some("http://example.com/test".to_string())
+        );
+        assert_eq!(extract_first_url("No link here at all"), None);
     }
 }

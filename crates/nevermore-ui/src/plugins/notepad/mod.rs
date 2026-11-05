@@ -36,9 +36,7 @@ impl SidebarPlugin for NotepadPlugin {
     }
 
     fn build_widget(&mut self, ctx: &PluginContext) -> Widget {
-        let notes_file = ctx.data_dir.join("notes.txt");
-        let theme = ctx.theme();
-        let pane = NotepadPane::new(notes_file, &theme);
+        let pane = NotepadPane::new(ctx);
         let widget = pane.widget().clone().upcast::<Widget>();
         self.pane = Some(pane);
         widget
