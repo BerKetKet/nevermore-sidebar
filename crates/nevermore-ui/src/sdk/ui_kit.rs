@@ -562,11 +562,41 @@ pub fn nm_status_dot(tone: Tone) -> StatusDot {
     }
 }
 
-/// nm_segmented: Icon-only segmented control.
-pub fn nm_segmented(
+/// SegmentedControl: Icon-only segmented control with programmatic selection.
+#[derive(Clone)]
+pub struct SegmentedControl {
+    container: GtkBox,
+    buttons: Rc<RefCell<Vec<Button>>>,
+}
+
+impl SegmentedControl {
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+
+    pub fn set_active(&self, active_idx: usize) {
+        for (i, b) in self.buttons.borrow().iter().enumerate() {
+            if i == active_idx {
+                b.add_css_class("active");
+            } else {
+                b.remove_css_class("active");
+            }
+        }
+    }
+}
+
+impl Deref for SegmentedControl {
+    type Target = GtkBox;
+    fn deref(&self) -> &Self::Target {
+        &self.container
+    }
+}
+
+pub fn nm_segmented_control(
     icon_tooltip_pairs: Vec<(impl Into<IconSource>, &str)>,
+    initial_idx: usize,
     on_select: impl Fn(usize) + 'static,
-) -> GtkBox {
+) -> SegmentedControl {
     let container = GtkBox::new(Orientation::Horizontal, 2);
     container.add_css_class("nm-segmented");
 
@@ -589,12 +619,20 @@ pub fn nm_segmented(
             on_select_clone(idx);
         });
 
-        if idx == 0 {
+        if idx == initial_idx {
             btn.widget().add_css_class("active");
         }
         buttons.borrow_mut().push(btn.widget().clone());
         container.append(btn.widget());
     }
 
-    container
+    SegmentedControl { container, buttons }
+}
+
+/// nm_segmented: Icon-only segmented control.
+pub fn nm_segmented(
+    icon_tooltip_pairs: Vec<(impl Into<IconSource>, &str)>,
+    on_select: impl Fn(usize) + 'static,
+) -> GtkBox {
+    nm_segmented_control(icon_tooltip_pairs, 0, on_select).container
 }

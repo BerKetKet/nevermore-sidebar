@@ -131,6 +131,8 @@ pub struct Status {
     pub random: bool,
     pub single: bool,
     pub consume: bool,
+    pub audio: Option<String>,
+    pub bitrate: Option<u32>,
 }
 
 impl Status {
@@ -189,6 +191,12 @@ impl Status {
                 "consume" => {
                     status.consume = v == "1";
                 }
+                "audio" => {
+                    status.audio = Some(v.clone());
+                }
+                "bitrate" => {
+                    status.bitrate = v.parse().ok();
+                }
                 _ => {}
             }
         }
@@ -206,6 +214,8 @@ pub struct Song {
     pub track: Option<String>,
     pub date: Option<String>,
     pub duration_sec: f64,
+    pub id: Option<u32>,
+    pub pos: Option<u32>,
 }
 
 impl Song {
@@ -220,6 +230,8 @@ impl Song {
                 "albumartist" => song.album_artist = Some(v.clone()),
                 "track" => song.track = Some(v.clone()),
                 "date" => song.date = Some(v.clone()),
+                "id" => song.id = v.parse().ok(),
+                "pos" => song.pos = v.parse().ok(),
                 "duration" | "time" if song.duration_sec == 0.0 => {
                     song.duration_sec = v.parse().unwrap_or(0.0);
                 }
@@ -228,6 +240,26 @@ impl Song {
         }
         song
     }
+}
+
+pub fn parse_songs(kvs: &[(String, String)]) -> Vec<Song> {
+    let mut songs = Vec::new();
+    let mut current_kvs = Vec::new();
+
+    for (k, v) in kvs {
+        if k.eq_ignore_ascii_case("file") && !current_kvs.is_empty() {
+            songs.push(Song::from_kvs(&current_kvs));
+            current_kvs.clear();
+        }
+        current_kvs.push((k.clone(), v.clone()));
+    }
+    if !current_kvs.is_empty() {
+        let song = Song::from_kvs(&current_kvs);
+        if !song.uri.is_empty() {
+            songs.push(song);
+        }
+    }
+    songs
 }
 
 pub fn quote_arg(arg: &str) -> Result<String, MpdError> {
@@ -451,6 +483,126 @@ impl MpdClient {
         let clamped = vol.clamp(0, 100);
         let arg = clamped.to_string();
         self.send_cmd("setvol", &[&arg])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_info(&mut self, start: u32, end: u32) -> Result<Vec<Song>, MpdError> {
+        let range = format!("{}:{}", start, end);
+        self.send_cmd("playlistinfo", &[&range])?;
+        let kvs = self.read_response()?;
+        Ok(parse_songs(&kvs))
+    }
+
+    pub fn playlist_clear(&mut self) -> Result<(), MpdError> {
+        self.send_cmd("clear", &[])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_delete_id(&mut self, id: u32) -> Result<(), MpdError> {
+        let id_str = id.to_string();
+        self.send_cmd("deleteid", &[&id_str])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_move_id(&mut self, id: u32, to_pos: u32) -> Result<(), MpdError> {
+        let id_str = id.to_string();
+        let pos_str = to_pos.to_string();
+        self.send_cmd("moveid", &[&id_str, &pos_str])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_shuffle(&mut self) -> Result<(), MpdError> {
+        self.send_cmd("shuffle", &[])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_save(&mut self, name: &str) -> Result<(), MpdError> {
+        self.send_cmd("save", &[name])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_load(&mut self, name: &str) -> Result<(), MpdError> {
+        self.send_cmd("load", &[name])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn playlist_rm(&mut self, name: &str) -> Result<(), MpdError> {
+        self.send_cmd("rm", &[name])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn list_playlists(&mut self) -> Result<Vec<String>, MpdError> {
+        self.send_cmd("listplaylists", &[])?;
+        let kvs = self.read_response()?;
+        let mut names = Vec::new();
+        for (k, v) in kvs {
+            if k == "playlist" {
+                names.push(v);
+            }
+        }
+        Ok(names)
+    }
+
+    pub fn search(
+        &mut self,
+        query: &str,
+        window_start: u32,
+        window_end: u32,
+    ) -> Result<Vec<Song>, MpdError> {
+        let win = format!("{}:{}", window_start, window_end);
+        self.send_cmd("search", &["any", query, "window", &win])?;
+        let kvs = self.read_response()?;
+        Ok(parse_songs(&kvs))
+    }
+
+    pub fn add_id(&mut self, uri: &str) -> Result<u32, MpdError> {
+        self.send_cmd("addid", &[uri])?;
+        let kvs = self.read_response()?;
+        for (k, v) in kvs {
+            if k.eq_ignore_ascii_case("id") {
+                if let Ok(id) = v.parse::<u32>() {
+                    return Ok(id);
+                }
+            }
+        }
+        Err(MpdError::Protocol("addid did not return Id".into()))
+    }
+
+    pub fn play_id(&mut self, id: u32) -> Result<(), MpdError> {
+        let id_str = id.to_string();
+        self.send_cmd("playid", &[&id_str])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn set_random(&mut self, val: bool) -> Result<(), MpdError> {
+        self.send_cmd("random", &[if val { "1" } else { "0" }])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn set_repeat(&mut self, val: bool) -> Result<(), MpdError> {
+        self.send_cmd("repeat", &[if val { "1" } else { "0" }])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn set_single(&mut self, val: bool) -> Result<(), MpdError> {
+        self.send_cmd("single", &[if val { "1" } else { "0" }])?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn set_consume(&mut self, val: bool) -> Result<(), MpdError> {
+        self.send_cmd("consume", &[if val { "1" } else { "0" }])?;
         self.read_response()?;
         Ok(())
     }
@@ -748,6 +900,8 @@ mod tests {
             ("Artist".to_string(), "Test Artist".to_string()),
             ("Album".to_string(), "Test Album".to_string()),
             ("Duration".to_string(), "215.5".to_string()),
+            ("Id".to_string(), "101".to_string()),
+            ("Pos".to_string(), "3".to_string()),
         ];
         let song = Song::from_kvs(&kvs);
         assert_eq!(song.uri, "Artist/Album/01 - Track.flac");
@@ -755,6 +909,40 @@ mod tests {
         assert_eq!(song.artist.as_deref(), Some("Test Artist"));
         assert_eq!(song.album.as_deref(), Some("Test Album"));
         assert_eq!(song.duration_sec, 215.5);
+        assert_eq!(song.id, Some(101));
+        assert_eq!(song.pos, Some(3));
+    }
+
+    #[test]
+    fn test_parse_songs_multiple() {
+        let kvs = vec![
+            ("file".to_string(), "Track1.mp3".to_string()),
+            ("Title".to_string(), "Song 1".to_string()),
+            ("Id".to_string(), "1".to_string()),
+            ("file".to_string(), "Track2.mp3".to_string()),
+            ("Title".to_string(), "Song 2".to_string()),
+            ("Id".to_string(), "2".to_string()),
+        ];
+        let songs = parse_songs(&kvs);
+        assert_eq!(songs.len(), 2);
+        assert_eq!(songs[0].uri, "Track1.mp3");
+        assert_eq!(songs[0].title.as_deref(), Some("Song 1"));
+        assert_eq!(songs[0].id, Some(1));
+        assert_eq!(songs[1].uri, "Track2.mp3");
+        assert_eq!(songs[1].title.as_deref(), Some("Song 2"));
+        assert_eq!(songs[1].id, Some(2));
+    }
+
+    #[test]
+    fn test_parse_status_audio() {
+        let kvs = vec![
+            ("state".to_string(), "play".to_string()),
+            ("audio".to_string(), "44100:16:2".to_string()),
+            ("bitrate".to_string(), "945".to_string()),
+        ];
+        let status = Status::from_kvs(&kvs);
+        assert_eq!(status.audio.as_deref(), Some("44100:16:2"));
+        assert_eq!(status.bitrate, Some(945));
     }
 
     #[test]
