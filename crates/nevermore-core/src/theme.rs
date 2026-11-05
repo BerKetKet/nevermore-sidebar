@@ -744,6 +744,12 @@ window {{
     border-left: 1px solid {border_color};
 }}
 
+.companion-blade {{
+    background-color: {bg_primary};
+    border-left: 1px solid {border_color};
+    border-right: 1px solid {border_color};
+}}
+
 .sidebar-panel.state-engaged {{
     border-left: 2px solid {accent_color};
 }}

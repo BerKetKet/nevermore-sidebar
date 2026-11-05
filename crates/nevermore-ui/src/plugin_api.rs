@@ -37,6 +37,7 @@ pub struct PluginContext {
     pub tmux: TmuxBackend,
     pub systemd: SystemdTaskBackend,
     pub kwin: KWinAdapter,
+    pub blade: Option<Rc<crate::companion_blade::CompanionBlade>>,
 }
 
 impl PluginContext {
@@ -90,12 +91,32 @@ impl PluginContext {
             tmux,
             systemd,
             kwin,
+            blade: None,
         }
     }
 
     /// Read-only getter for the current theme palette.
     pub fn theme(&self) -> ThemePalette {
         self.theme.borrow().clone()
+    }
+
+    /// Opens the companion side-blade with a custom widget.
+    pub fn open_companion_blade(&self, widget: &impl IsA<gtk4::Widget>) {
+        if let Some(ref blade) = self.blade {
+            blade.open(&self.plugin_id, widget.as_ref());
+        }
+    }
+
+    /// Closes the companion side-blade.
+    pub fn close_companion_blade(&self) {
+        if let Some(ref blade) = self.blade {
+            blade.close();
+        }
+    }
+
+    /// Checks if the companion side-blade is currently visible.
+    pub fn is_companion_blade_open(&self) -> bool {
+        self.blade.as_ref().map(|b| b.is_visible()).unwrap_or(false)
     }
 
     /// Helper for headless test execution.
@@ -113,6 +134,7 @@ impl PluginContext {
             tmux: TmuxBackend::new("nevermore"),
             systemd: SystemdTaskBackend::new("nevermore"),
             kwin: KWinAdapter::new(),
+            blade: None,
         }
     }
 
