@@ -1,9 +1,27 @@
 use nevermore_ui::prelude::*;
 
 pub const SETTINGS: &[SettingSpec] = &[
-    SettingSpec::new("refresh_interval", "Refresh Interval (s)", SettingKind::Int),
-    SettingSpec::new("auto_refresh", "Auto Refresh", SettingKind::Bool),
-    SettingSpec::new("api_token", "API Token", SettingKind::Secret),
+    SettingSpec::new(
+        "refresh_interval",
+        "Refresh Interval (s)",
+        SettingKind::Int {
+            default: 60,
+            min: 5,
+            max: 3600,
+        },
+    ),
+    SettingSpec::new(
+        "auto_refresh",
+        "Auto Refresh",
+        SettingKind::Bool { default: true },
+    ),
+    SettingSpec::new(
+        "api_token",
+        "API Token",
+        SettingKind::Secret {
+            key_name: "api_token",
+        },
+    ),
 ];
 
 pub const SPEC: PluginSpec = PluginSpec::with_settings(

@@ -320,11 +320,12 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
             let p_ctx_set = p_ctx.clone();
 
             match setting.kind {
-                SettingKind::Text => {
+                SettingKind::Text { default } => {
                     let entry = Entry::new();
-                    if let Some(val) = p_ctx.setting_str(key) {
-                        entry.set_text(&val);
-                    }
+                    let current = p_ctx
+                        .setting_str(key)
+                        .unwrap_or_else(|| default.to_string());
+                    entry.set_text(&current);
                     entry.set_hexpand(true);
                     let k_str = key.to_string();
                     entry.connect_changed(move |e| {
@@ -333,19 +334,19 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
                     });
                     card_widgets.push(entry.upcast::<gtk4::Widget>());
                 }
-                SettingKind::Secret => {
+                SettingKind::Secret { key_name } => {
                     let hbox = GtkBox::new(Orientation::Horizontal, 6);
                     hbox.set_hexpand(true);
 
                     let entry = Entry::new();
                     entry.set_visibility(false);
                     entry.set_hexpand(true);
-                    if let Some(val) = p_ctx.secret_get_blocking(key) {
+                    if let Some(val) = p_ctx.secret_get_blocking(key_name) {
                         entry.set_text(&val);
                     }
 
                     let save_btn = nm_icon_button("save", "Save Secret");
-                    let k_str = key.to_string();
+                    let k_str = key_name.to_string();
                     let entry_weak = entry.downgrade();
                     let p_ctx_sec = p_ctx_set.clone();
                     save_btn.on_click(move || {
@@ -359,9 +360,9 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
                     hbox.append(save_btn.widget());
                     card_widgets.push(hbox.upcast::<gtk4::Widget>());
                 }
-                SettingKind::Bool => {
+                SettingKind::Bool { default } => {
                     let switch = Switch::new();
-                    switch.set_active(p_ctx.setting_bool(key).unwrap_or(false));
+                    switch.set_active(p_ctx.setting_bool(key).unwrap_or(default));
                     let k_str = key.to_string();
                     switch.connect_state_set(move |_, state| {
                         let _ = p_ctx_set.set_setting(&k_str, toml::Value::Boolean(state));
@@ -369,9 +370,9 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
                     });
                     card_widgets.push(switch.upcast::<gtk4::Widget>());
                 }
-                SettingKind::Int => {
-                    let spin = SpinButton::with_range(0.0, 86400.0, 1.0);
-                    spin.set_value(p_ctx.setting_int(key).unwrap_or(0) as f64);
+                SettingKind::Int { default, min, max } => {
+                    let spin = SpinButton::with_range(min as f64, max as f64, 1.0);
+                    spin.set_value(p_ctx.setting_int(key).unwrap_or(default) as f64);
                     let k_str = key.to_string();
                     spin.connect_value_changed(move |s| {
                         let val = s.value() as i64;
@@ -379,17 +380,17 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
                     });
                     card_widgets.push(spin.upcast::<gtk4::Widget>());
                 }
-                SettingKind::Choice(choices) => {
-                    let str_list = StringList::new(choices);
+                SettingKind::Choice { options, default } => {
+                    let str_list = StringList::new(options);
                     let dd = DropDown::new(Some(str_list), None::<gtk4::Expression>);
-                    let cur_choice = p_ctx.setting_str(key);
-                    if let Some(ref c) = cur_choice {
-                        if let Some(pos) = choices.iter().position(|ch| ch == c) {
-                            dd.set_selected(pos as u32);
-                        }
+                    let cur_choice = p_ctx
+                        .setting_str(key)
+                        .unwrap_or_else(|| default.to_string());
+                    if let Some(pos) = options.iter().position(|ch| *ch == cur_choice) {
+                        dd.set_selected(pos as u32);
                     }
                     let k_str = key.to_string();
-                    let choices_vec: Vec<&'static str> = choices.to_vec();
+                    let choices_vec: Vec<&'static str> = options.to_vec();
                     dd.connect_selected_notify(move |d| {
                         let idx = d.selected() as usize;
                         if let Some(choice) = choices_vec.get(idx) {
@@ -399,11 +400,12 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
                     });
                     card_widgets.push(dd.upcast::<gtk4::Widget>());
                 }
-                SettingKind::Path => {
+                SettingKind::Path { default } => {
                     let entry = Entry::new();
-                    if let Some(val) = p_ctx.setting_str(key) {
-                        entry.set_text(&val);
-                    }
+                    let current = p_ctx
+                        .setting_str(key)
+                        .unwrap_or_else(|| default.to_string());
+                    entry.set_text(&current);
                     entry.set_hexpand(true);
                     let k_str = key.to_string();
                     entry.connect_changed(move |e| {

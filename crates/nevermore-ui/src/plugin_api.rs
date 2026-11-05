@@ -1,6 +1,6 @@
 use crate::sdk::cmd::{Cmd, CmdResult};
 use crate::sdk::lifecycle::PluginLifecycle;
-use crate::sdk::types::{KeepOnHide, Tx};
+use crate::sdk::types::{KeepOnHide, SettingKind, Tx};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{Overflow, PolicyType, ScrolledWindow, Widget};
@@ -163,6 +163,15 @@ impl PluginContext {
     /// Registers a callback invoked whenever the plugin becomes hidden.
     pub fn on_hide(&self, callback: impl Fn() + 'static) {
         self.lifecycle.borrow_mut().register_on_hide(callback);
+    }
+
+    /// Executes a callback after a specified duration on the local GLib context.
+    pub fn after_delay<F: FnOnce() + 'static>(
+        &self,
+        delay: Duration,
+        callback: F,
+    ) -> glib::SourceId {
+        glib::timeout_add_local_once(delay, callback)
     }
 
     /// Spawns a background command and posts the mapped result to the mailbox.
@@ -351,30 +360,7 @@ impl PluginContext {
         let key_str = key.to_string();
         let tx = tx.clone();
         std::thread::spawn(move || {
-            let output = std::process::Command::new("secret-tool")
-                .args([
-                    "lookup",
-                    "service",
-                    "nevermore",
-                    "plugin",
-                    &plugin_id,
-                    "key",
-                    &key_str,
-                ])
-                .output()
-                .ok();
-            let val = output.and_then(|out| {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !s.is_empty() {
-                        Some(s)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            });
+            let val = secret_lookup(&plugin_id, &key_str);
             tx.send(map_res(val));
         });
     }
@@ -392,89 +378,19 @@ impl PluginContext {
         let val_str = val.to_string();
         let tx = tx.clone();
         std::thread::spawn(move || {
-            use std::io::Write;
-            let success = match std::process::Command::new("secret-tool")
-                .args([
-                    "store",
-                    &format!("--label=Nevermore {} {}", plugin_id, key_str),
-                    "service",
-                    "nevermore",
-                    "plugin",
-                    &plugin_id,
-                    "key",
-                    &key_str,
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(mut child) => {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(val_str.as_bytes());
-                    }
-                    child.wait().map(|s| s.success()).unwrap_or(false)
-                }
-                Err(_) => false,
-            };
+            let success = secret_store(&plugin_id, &key_str, &val_str).is_ok();
             tx.send(map_res(success));
         });
     }
 
     /// Synchronous secret lookup helper.
     pub fn secret_get_blocking(&self, key: &str) -> Option<String> {
-        let output = std::process::Command::new("secret-tool")
-            .args([
-                "lookup",
-                "service",
-                "nevermore",
-                "plugin",
-                &self.plugin_id,
-                "key",
-                key,
-            ])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !s.is_empty() {
-                return Some(s);
-            }
-        }
-        None
+        secret_lookup(&self.plugin_id, key)
     }
 
     /// Synchronous secret store helper.
     pub fn secret_set_blocking(&self, key: &str, val: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut child = std::process::Command::new("secret-tool")
-            .args([
-                "store",
-                &format!("--label=Nevermore {} {}", self.plugin_id, key),
-                "service",
-                "nevermore",
-                "plugin",
-                &self.plugin_id,
-                "key",
-                key,
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(val.as_bytes())?;
-        }
-
-        let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other(
-                "secret-tool returned non-zero exit status",
-            ))
-        }
+        secret_store(&self.plugin_id, key, val)
     }
 
     pub fn plugin_config_path(&self) -> PathBuf {
@@ -500,18 +416,72 @@ impl PluginContext {
     }
 
     pub fn setting_str(&self, key: &str) -> Option<String> {
-        self.read_plugin_toml()
+        if let Some(val) = self
+            .read_plugin_toml()
             .and_then(|t| t.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()))
+        {
+            return Some(val);
+        }
+        for spec in crate::plugins::ALL_DISCOVERED_SPECS {
+            if spec.id == self.plugin_id {
+                for setting in spec.settings {
+                    if setting.key == key {
+                        match setting.kind {
+                            SettingKind::Text { default } | SettingKind::Path { default } => {
+                                return Some(default.to_string());
+                            }
+                            SettingKind::Choice { default, .. } => {
+                                return Some(default.to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn setting_bool(&self, key: &str) -> Option<bool> {
-        self.read_plugin_toml()
+        if let Some(val) = self
+            .read_plugin_toml()
             .and_then(|t| t.get(key).and_then(|v| v.as_bool()))
+        {
+            return Some(val);
+        }
+        for spec in crate::plugins::ALL_DISCOVERED_SPECS {
+            if spec.id == self.plugin_id {
+                for setting in spec.settings {
+                    if setting.key == key {
+                        if let SettingKind::Bool { default } = setting.kind {
+                            return Some(default);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn setting_int(&self, key: &str) -> Option<i64> {
-        self.read_plugin_toml()
+        if let Some(val) = self
+            .read_plugin_toml()
             .and_then(|t| t.get(key).and_then(|v| v.as_integer()))
+        {
+            return Some(val);
+        }
+        for spec in crate::plugins::ALL_DISCOVERED_SPECS {
+            if spec.id == self.plugin_id {
+                for setting in spec.settings {
+                    if setting.key == key {
+                        if let SettingKind::Int { default, .. } = setting.kind {
+                            return Some(default);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn set_setting(&self, key: &str, val: toml::Value) -> std::io::Result<()> {
@@ -610,6 +580,60 @@ pub fn wrap_in_plugin_container(widget: &Widget, manages_own_scroll: bool) -> Sc
     scrolled.set_overflow(Overflow::Hidden);
     scrolled.set_child(Some(widget));
     scrolled
+}
+
+/// Standalone thread-safe secret lookup function using `secret-tool`.
+pub fn secret_lookup(plugin_id: &str, key: &str) -> Option<String> {
+    let output = std::process::Command::new("secret-tool")
+        .args([
+            "lookup",
+            "service",
+            "nevermore",
+            "plugin",
+            plugin_id,
+            "key",
+            key,
+        ])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// Standalone thread-safe secret store function using `secret-tool`.
+pub fn secret_store(plugin_id: &str, key: &str, val: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("secret-tool")
+        .args([
+            "store",
+            &format!("--label=Nevermore {} {}", plugin_id, key),
+            "service",
+            "nevermore",
+            "plugin",
+            plugin_id,
+            "key",
+            key,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(val.as_bytes())?;
+    }
+
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("secret-tool store failed"))
+    }
 }
 
 #[cfg(test)]

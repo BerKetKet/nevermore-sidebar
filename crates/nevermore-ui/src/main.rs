@@ -23,7 +23,7 @@ use nevermore_core::tmux::TmuxBackend;
 use nevermore_core::traits::{SessionBackend, TaskBackend, WindowRaiser};
 use nevermore_core::SystemdTaskBackend;
 use plugins::{create_default_registry, PluginRegistry};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -329,6 +329,7 @@ fn main() {
             peek_grace_source: RefCell<Option<glib::SourceId>>,
             registry: Rc<RefCell<PluginRegistry>>,
             theme: Rc<RefCell<ThemePalette>>,
+            is_pinned: Cell<bool>,
         }
 
         let ctx = Rc::new(UiContext {
@@ -343,6 +344,7 @@ fn main() {
             peek_grace_source: RefCell::new(None),
             registry: registry.clone(),
             theme: theme_cell.clone(),
+            is_pinned: Cell::new(false),
         });
 
         // Single authoritative apply_state synchronizer
@@ -361,14 +363,25 @@ fn main() {
                 }
 
                 let theme = ctx.theme.borrow();
+                let currently_pinned = state == SidebarState::Pinned;
+                if currently_pinned != ctx.is_pinned.get() {
+                    ctx.is_pinned.set(currently_pinned);
+                    if currently_pinned {
+                        ctx.btn_pin.add_css_class("pinned");
+                        let accent_fg = contrast_text_color_for_hex(&theme.accent_color);
+                        icons::set_button_icon(&ctx.btn_pin, "pin-off", accent_fg, 16);
+                    } else {
+                        ctx.btn_pin.remove_css_class("pinned");
+                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
+                    }
+                }
+
                 match state {
                     SidebarState::Hidden => {
                         ctx.panel_window.set_visible(false);
                         ctx.hot_edge_window.set_visible(true);
                         ctx.hot_edge_window.present();
                         ctx.panel_window.remove_css_class("state-engaged");
-                        ctx.btn_pin.remove_css_class("pinned");
-                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Peek => {
                         ctx.hot_edge_window.set_visible(false);
@@ -377,8 +390,6 @@ fn main() {
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
                         ctx.panel_window.remove_css_class("state-engaged");
-                        ctx.btn_pin.remove_css_class("pinned");
-                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Engaged => {
                         ctx.hot_edge_window.set_visible(false);
@@ -387,8 +398,6 @@ fn main() {
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
                         ctx.panel_window.add_css_class("state-engaged");
-                        ctx.btn_pin.remove_css_class("pinned");
-                        icons::set_button_icon(&ctx.btn_pin, "pin", &theme.text_secondary, 16);
                     }
                     SidebarState::Pinned => {
                         ctx.hot_edge_window.set_visible(false);
@@ -397,9 +406,6 @@ fn main() {
                         ctx.panel_window
                             .set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
                         ctx.panel_window.remove_css_class("state-engaged");
-                        ctx.btn_pin.add_css_class("pinned");
-                        let accent_fg = contrast_text_color_for_hex(&theme.accent_color);
-                        icons::set_button_icon(&ctx.btn_pin, "pin-off", accent_fg, 16);
                     }
                 }
                 drop(theme);
@@ -903,7 +909,17 @@ fn main() {
                     }
                     nevermore_core::ipc::IpcRequest::SetTheme { name } => {
                         let response = match load_theme(&name) {
-                            Ok(new_palette) => {
+                            Ok(mut new_palette) => {
+                                let (ui_f, mono_f, mono_sz) = get_appearance_config();
+                                if let Some(f) = ui_f {
+                                    new_palette.ui_font = f;
+                                }
+                                if let Some(mf) = mono_f {
+                                    new_palette.mono_font = mf;
+                                }
+                                if let Some(msz) = mono_sz {
+                                    new_palette.mono_font_size = msz as u32;
+                                }
                                 *theme_ipc.borrow_mut() = new_palette.clone();
                                 let _ = set_active_theme_name(&name);
                                 css_prov_ipc.load_from_string(&new_palette.to_gtk_css());

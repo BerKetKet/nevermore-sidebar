@@ -6,10 +6,36 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 pub const SETTINGS: &[SettingSpec] = &[
-    SettingSpec::new("socket", "MPD Socket Path", SettingKind::Path),
-    SettingSpec::new("host", "MPD Host", SettingKind::Text),
-    SettingSpec::new("port", "MPD Port", SettingKind::Int),
-    SettingSpec::new("music_dir", "Music Directory", SettingKind::Path),
+    SettingSpec::new(
+        "socket",
+        "MPD Socket Path",
+        SettingKind::Path {
+            default: "~/.config/mpd/socket",
+        },
+    ),
+    SettingSpec::new(
+        "host",
+        "MPD Host",
+        SettingKind::Text {
+            default: "127.0.0.1",
+        },
+    ),
+    SettingSpec::new(
+        "port",
+        "MPD Port",
+        SettingKind::Int {
+            default: 6600,
+            min: 1,
+            max: 65535,
+        },
+    ),
+    SettingSpec::new(
+        "music_dir",
+        "Music Directory",
+        SettingKind::Path {
+            default: "~/Music",
+        },
+    ),
 ];
 
 pub const SPEC: PluginSpec = PluginSpec::with_settings(
@@ -36,9 +62,18 @@ pub enum MusicMsg {
     MpdUnreachable(String),
 }
 
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(stripped) = p.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    PathBuf::from(p)
+}
+
 fn resolve_endpoint(ctx: &PluginContext) -> MpdEndpoint {
     if let Some(sock) = ctx.setting_str("socket") {
-        let p = PathBuf::from(sock);
+        let p = expand_tilde(&sock);
         if p.exists() {
             return MpdEndpoint::Unix(p);
         }
@@ -50,6 +85,17 @@ fn resolve_endpoint(ctx: &PluginContext) -> MpdEndpoint {
         }
     }
     MpdEndpoint::Auto
+}
+
+#[allow(dead_code)]
+fn resolve_music_dir(ctx: &PluginContext) -> PathBuf {
+    if let Some(dir) = ctx.setting_str("music_dir") {
+        let p = expand_tilde(&dir);
+        if p.exists() {
+            return p;
+        }
+    }
+    expand_tilde("~/Music")
 }
 
 fn format_time(secs: f64) -> String {
@@ -447,50 +493,73 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         spawn_action(ep, tx_next.clone(), |c| c.next());
     });
 
-    // 5. Seek Slider Change (Guarded by is_syncing)
+    // 5. Seek Slider Change (Guarded by is_syncing, debounced 100ms)
     let is_seeking_track = is_user_seeking;
     let is_syncing_seek = is_syncing.clone();
     let ctx_seek = ctx.clone();
     let tx_seek = tx.clone();
+    let seek_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     seek_scale.connect_change_value({
         let is_seeking = is_seeking_track;
         let is_sync = is_syncing_seek;
+        let debounce = seek_debounce;
         move |_, _, target_val| {
             if is_sync.get() {
                 return glib::Propagation::Proceed;
             }
             *is_seeking.borrow_mut() = true;
+            if let Some(source) = debounce.borrow_mut().take() {
+                source.remove();
+            }
             let ep = resolve_endpoint(&ctx_seek);
             let tx_action = tx_seek.clone();
-            std::thread::spawn(move || {
-                if let Ok(mut client) = MpdClient::connect(&ep) {
-                    let _ = client.seek_cur(target_val);
-                }
-                tx_action.send(MusicMsg::SeekCompleted);
-                tx_action.send(MusicMsg::RefreshTriggered);
+            let deb_clone = debounce.clone();
+            let source_id = ctx_seek.after_delay(Duration::from_millis(100), move || {
+                deb_clone.borrow_mut().take();
+                std::thread::spawn(move || {
+                    if let Ok(mut client) = MpdClient::connect(&ep) {
+                        let _ = client.seek_cur(target_val);
+                    }
+                    tx_action.send(MusicMsg::SeekCompleted);
+                    tx_action.send(MusicMsg::RefreshTriggered);
+                });
             });
+            *debounce.borrow_mut() = Some(source_id);
             glib::Propagation::Proceed
         }
     });
 
-    // 6. Volume Slider Change (Guarded by is_syncing)
-    let is_syncing_vol = is_syncing.clone();
+    // 6. Volume Slider Change (Guarded by is_syncing, debounced 100ms)
+    let is_syncing_vol = is_syncing;
     let ctx_vol = ctx.clone();
     let tx_vol = tx.clone();
-    vol_scale.connect_change_value(move |_, _, target_val| {
-        if is_syncing_vol.get() {
-            return glib::Propagation::Proceed;
-        }
-        let vol = target_val.clamp(0.0, 100.0) as i32;
-        let ep = resolve_endpoint(&ctx_vol);
-        let tx_out = tx_vol.clone();
-        std::thread::spawn(move || {
-            if let Ok(mut client) = MpdClient::connect(&ep) {
-                let _ = client.set_volume(vol);
-                tx_out.send(MusicMsg::RefreshTriggered);
+    let vol_debounce: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    vol_scale.connect_change_value({
+        let is_sync = is_syncing_vol;
+        let debounce = vol_debounce;
+        move |_, _, target_val| {
+            if is_sync.get() {
+                return glib::Propagation::Proceed;
             }
-        });
-        glib::Propagation::Proceed
+            let vol = target_val.clamp(0.0, 100.0) as i32;
+            if let Some(source) = debounce.borrow_mut().take() {
+                source.remove();
+            }
+            let ep = resolve_endpoint(&ctx_vol);
+            let tx_out = tx_vol.clone();
+            let deb_clone = debounce.clone();
+            let source_id = ctx_vol.after_delay(Duration::from_millis(100), move || {
+                deb_clone.borrow_mut().take();
+                std::thread::spawn(move || {
+                    if let Ok(mut client) = MpdClient::connect(&ep) {
+                        let _ = client.set_volume(vol);
+                        tx_out.send(MusicMsg::RefreshTriggered);
+                    }
+                });
+            });
+            *debounce.borrow_mut() = Some(source_id);
+            glib::Propagation::Proceed
+        }
     });
 
     // 7. Mute Button Toggle
@@ -573,10 +642,6 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             handle.stop();
         }
     });
-
-    // Initial start
-    start_idle_listener();
-    tx.send(MusicMsg::RefreshTriggered);
 
     let page = nm_page([
         header_card.upcast::<gtk4::Widget>(),

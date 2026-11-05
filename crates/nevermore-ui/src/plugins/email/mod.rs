@@ -5,127 +5,135 @@ use std::net::TcpListener;
 use std::rc::Rc;
 
 pub const SETTINGS: &[SettingSpec] = &[
-    SettingSpec::new("client_id", "Google OAuth Client ID", SettingKind::Text),
+    SettingSpec::new(
+        "client_id",
+        "Google OAuth Client ID",
+        SettingKind::Text { default: "" },
+    ),
     SettingSpec::new(
         "client_secret",
         "Google OAuth Client Secret",
-        SettingKind::Secret,
+        SettingKind::Secret {
+            key_name: "client_secret",
+        },
     ),
-    SettingSpec::new("poll_interval_sec", "Poll Interval (s)", SettingKind::Int),
+    SettingSpec::new(
+        "poll_interval_sec",
+        "Poll Interval (s)",
+        SettingKind::Int {
+            default: 120,
+            min: 10,
+            max: 86400,
+        },
+    ),
 ];
 
 pub fn settings_custom(ctx: &PluginContext) -> gtk4::Widget {
     let auth_btn = nm_icon_button("key", "Authorize Gmail Account");
-    let is_auth = ctx.secret_get_blocking("gmail_refresh_token").is_some();
-    let status_label = nm_data_label(if is_auth {
-        "AUTHORIZED"
-    } else {
-        "NOT AUTHORIZED"
+    let status_label = nm_data_label("CHECKING...");
+    status_label.set_tone(Tone::Muted);
+
+    let (tx_status, rx_status) = async_channel::unbounded::<(String, Tone)>();
+    let status_for_rx = status_label.clone();
+    glib::spawn_future_local(async move {
+        while let Ok((msg, tone)) = rx_status.recv().await {
+            status_for_rx.set(&msg);
+            status_for_rx.set_tone(tone);
+        }
     });
-    status_label.set_tone(if is_auth {
-        Tone::Success
-    } else {
-        Tone::Warning
-    });
 
-    let ctx_auth = ctx.clone();
-    let status_clone = status_label.clone();
-    auth_btn.on_click(move || {
-        let client_id = ctx_auth
-            .setting_str("client_id")
-            .or_else(|| std::env::var("GMAIL_CLIENT_ID").ok());
-        let client_secret = ctx_auth
-            .secret_get_blocking("client_secret")
-            .or_else(|| std::env::var("GMAIL_CLIENT_SECRET").ok());
-
-        let (client_id, client_secret) = match (client_id, client_secret) {
-            (Some(id), Some(sec)) if !id.trim().is_empty() && !sec.trim().is_empty() => (id, sec),
-            _ => {
-                status_clone.set("CONFIG REQUIRED");
-                status_clone.set_tone(Tone::Warning);
-                return;
-            }
-        };
-
-        status_clone.set("AUTHORIZING...");
-        status_clone.set_tone(Tone::Accent);
-
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(l) => l,
-            Err(e) => {
-                status_clone.set(&format!("BIND FAILED: {}", e));
-                status_clone.set_tone(Tone::Danger);
-                return;
-            }
-        };
-
-        let port = match listener.local_addr() {
-            Ok(a) => a.port(),
-            Err(e) => {
-                status_clone.set(&format!("PORT FAILED: {}", e));
-                status_clone.set_tone(Tone::Danger);
-                return;
-            }
-        };
-
-        let redirect_uri = format!("http://127.0.0.1:{}", port);
-        let auth_url = format!(
-            "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify&access_type=offline&prompt=consent",
-            client_id,
-            url_encode(&redirect_uri)
-        );
-
-        let _ = Cmd::new("xdg-open").arg(&auth_url).spawn_detached();
-
-        let (code_tx, code_rx) = async_channel::bounded::<Result<String, String>>(1);
-        std::thread::spawn(move || {
-            let res = wait_for_redirect_code(listener);
-            let _ = code_tx.send_blocking(res);
+    let pid_check = ctx.plugin_id.clone();
+    let tx_check = tx_status.clone();
+    std::thread::spawn(move || {
+        let is_auth = nevermore_ui::plugin_api::secret_lookup(&pid_check, "gmail_refresh_token")
+            .is_some()
+            || std::env::var("GMAIL_REFRESH_TOKEN").is_ok();
+        let _ = tx_check.send_blocking(if is_auth {
+            ("AUTHORIZED".to_string(), Tone::Success)
+        } else {
+            ("NOT AUTHORIZED".to_string(), Tone::Warning)
         });
+    });
 
-        let ctx_save = ctx_auth.clone();
-        let status_lbl = status_clone.clone();
-        glib::spawn_future_local(async move {
-            match code_rx.recv().await {
-                Ok(Ok(code)) => {
+    let pid_auth = ctx.plugin_id.clone();
+    let tx_auth = tx_status.clone();
+    let client_id_opt = ctx.setting_str("client_id");
+    auth_btn.on_click(move || {
+        let pid_bg = pid_auth.clone();
+        let tx_bg = tx_auth.clone();
+        let client_id_opt = client_id_opt.clone();
+
+        let _ = tx_bg.send_blocking(("CONFIGURING...".to_string(), Tone::Accent));
+
+        std::thread::spawn(move || {
+            let client_id = client_id_opt
+                .or_else(|| std::env::var("GMAIL_CLIENT_ID").ok());
+            let client_secret = nevermore_ui::plugin_api::secret_lookup(&pid_bg, "client_secret")
+                .or_else(|| std::env::var("GMAIL_CLIENT_SECRET").ok());
+
+            let (client_id, client_secret) = match (client_id, client_secret) {
+                (Some(id), Some(sec)) if !id.trim().is_empty() && !sec.trim().is_empty() => {
+                    (id, sec)
+                }
+                _ => {
+                    let _ = tx_bg.send_blocking(("CONFIG REQUIRED".to_string(), Tone::Warning));
+                    return;
+                }
+            };
+
+            let listener = match TcpListener::bind("127.0.0.1:0") {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx_bg.send_blocking((format!("BIND FAILED: {}", e), Tone::Danger));
+                    return;
+                }
+            };
+
+            let port = match listener.local_addr() {
+                Ok(a) => a.port(),
+                Err(e) => {
+                    let _ = tx_bg.send_blocking((format!("PORT FAILED: {}", e), Tone::Danger));
+                    return;
+                }
+            };
+
+            let redirect_uri = format!("http://127.0.0.1:{}", port);
+            let auth_url = format!(
+                "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify&access_type=offline&prompt=consent",
+                client_id,
+                url_encode(&redirect_uri)
+            );
+
+            let _ = Cmd::new("xdg-open").arg(&auth_url).spawn_detached();
+
+            let _ = tx_bg.send_blocking(("AUTHORIZING...".to_string(), Tone::Accent));
+
+            let res = wait_for_redirect_code(listener);
+            match res {
+                Ok(code) => {
                     let token_cmd =
                         build_exchange_cmd(&code, &client_id, &client_secret, &redirect_uri);
-                    let (tok_tx, tok_rx) = async_channel::bounded::<CmdResult>(1);
-                    ctx_save.run(token_cmd, &Tx::new(tok_tx), |res| res);
-                    if let Ok(cmd_res) = tok_rx.recv().await {
-                        if cmd_res.code == Some(0) {
-                            if let Ok(token_json) =
-                                serde_json::from_str::<serde_json::Value>(&cmd_res.stdout)
-                            {
-                                if let Some(refresh_token) = token_json["refresh_token"].as_str() {
-                                    let _ = ctx_save.secret_set_blocking(
-                                        "gmail_refresh_token",
-                                        refresh_token,
-                                    );
-                                    if let Some(access_token) = token_json["access_token"].as_str()
-                                    {
-                                        let _ = ctx_save.secret_set_blocking(
-                                            "gmail_access_token",
-                                            access_token,
-                                        );
-                                    }
-                                    status_lbl.set("AUTHORIZED");
-                                    status_lbl.set_tone(Tone::Success);
-                                    return;
+                    let cmd_res = token_cmd.run_in_worker_thread();
+                    if cmd_res.code == Some(0) {
+                        if let Ok(token_json) =
+                            serde_json::from_str::<serde_json::Value>(&cmd_res.stdout)
+                        {
+                            if let Some(refresh_token) = token_json["refresh_token"].as_str() {
+                                let ref_tok = refresh_token.to_string();
+                                let acc_tok = token_json["access_token"].as_str().map(|s| s.to_string());
+                                let _ = nevermore_ui::plugin_api::secret_store(&pid_bg, "gmail_refresh_token", &ref_tok);
+                                if let Some(acc) = acc_tok {
+                                    let _ = nevermore_ui::plugin_api::secret_store(&pid_bg, "gmail_access_token", &acc);
                                 }
+                                let _ = tx_bg.send_blocking(("AUTHORIZED".to_string(), Tone::Success));
+                                return;
                             }
                         }
-                        status_lbl.set("EXCHANGE FAILED");
-                        status_lbl.set_tone(Tone::Danger);
                     }
+                    let _ = tx_bg.send_blocking(("EXCHANGE FAILED".to_string(), Tone::Danger));
                 }
-                Ok(Err(err)) => {
-                    status_lbl.set(&format!("AUTH FAILED: {}", err));
-                    status_lbl.set_tone(Tone::Danger);
-                }
-                Err(_) => {
-                    status_lbl.set("CANCELLED");
-                    status_lbl.set_tone(Tone::Warning);
+                Err(err) => {
+                    let _ = tx_bg.send_blocking((format!("AUTH FAILED: {}", err), Tone::Danger));
                 }
             }
         });
@@ -171,6 +179,11 @@ pub enum EmailMsg {
     },
     TokenRefreshed {
         token: String,
+    },
+    CredentialsLoaded {
+        refresh_token: String,
+        client_id: String,
+        client_secret: String,
     },
     MarkRead(String),
     RefreshTriggered,
@@ -259,6 +272,8 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     let pending_emails: Rc<RefCell<Vec<EmailSummary>>> = Rc::new(RefCell::new(Vec::new()));
     let render_box = box_for_msg.clone();
     let pending_for_msg = pending_emails;
+    let cached_token: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let cached_token_for_msg = cached_token.clone();
 
     let tx = ctx.mailbox(move |msg: EmailMsg, tx_mailbox| match msg {
         EmailMsg::UpdateList(emails) => {
@@ -281,9 +296,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
             pending_for_msg.borrow_mut().clear();
             let total = messages.len();
-            let token = ctx_msg
-                .secret_get_blocking("gmail_access_token")
-                .unwrap_or_default();
+            let token = cached_token_for_msg.borrow().clone().unwrap_or_default();
 
             for (msg_id, thread_id) in messages {
                 let detail_cmd = build_detail_cmd(&token, &msg_id);
@@ -345,8 +358,34 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                 tx_mailbox.send(EmailMsg::UpdateList(emails));
             }
         }
+        EmailMsg::CredentialsLoaded {
+            refresh_token,
+            client_id,
+            client_secret,
+        } => {
+            let refresh_cmd = build_refresh_cmd(&client_id, &client_secret, &refresh_token);
+            let tx_tok = tx_mailbox.clone();
+            ctx_msg.run(refresh_cmd, &tx_tok, move |res| {
+                if res.code != Some(0) {
+                    return EmailMsg::ErrorOccurred("AUTH ERROR".to_string());
+                }
+                if let Ok(token_json) = serde_json::from_str::<serde_json::Value>(&res.stdout) {
+                    if let Some(new_access) = token_json["access_token"].as_str() {
+                        return EmailMsg::TokenRefreshed {
+                            token: new_access.to_string(),
+                        };
+                    }
+                }
+                EmailMsg::ErrorOccurred("TOKEN ERROR".to_string())
+            });
+        }
         EmailMsg::TokenRefreshed { token } => {
-            let _ = ctx_msg.secret_set_blocking("gmail_access_token", &token);
+            *cached_token_for_msg.borrow_mut() = Some(token.clone());
+            let pid = ctx_msg.plugin_id.clone();
+            let tok_to_save = token.clone();
+            std::thread::spawn(move || {
+                let _ = nevermore_ui::plugin_api::secret_store(&pid, "gmail_access_token", &tok_to_save);
+            });
             let list_cmd = build_list_cmd(&token);
             let tx_inner = tx_mailbox.clone();
             ctx_msg.run(list_cmd, &tx_inner, move |res| {
@@ -368,9 +407,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             });
         }
         EmailMsg::MarkRead(id) => {
-            let token = ctx_msg
-                .secret_get_blocking("gmail_access_token")
-                .unwrap_or_default();
+            let token = cached_token_for_msg.borrow().clone().unwrap_or_default();
             let modify_cmd = build_modify_cmd(&token, &id);
             let tx_inner = tx_mailbox.clone();
             ctx_msg.run(modify_cmd, &tx_inner, move |_| {
@@ -378,39 +415,31 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             });
         }
         EmailMsg::RefreshTriggered => {
-            let refresh_token = ctx_msg
-                .secret_get_blocking("gmail_refresh_token")
-                .or_else(|| std::env::var("GMAIL_REFRESH_TOKEN").ok())
-                .unwrap_or_default();
-
-            if refresh_token.is_empty() {
-                tx_mailbox.send(EmailMsg::ErrorOccurred("NOT CONFIGURED".to_string()));
-                return;
-            }
-
-            let client_id = ctx_msg
-                .setting_str("client_id")
-                .or_else(|| std::env::var("GMAIL_CLIENT_ID").ok())
-                .unwrap_or_default();
-            let client_secret = ctx_msg
-                .secret_get_blocking("client_secret")
-                .or_else(|| std::env::var("GMAIL_CLIENT_SECRET").ok())
-                .unwrap_or_default();
-
-            let refresh_cmd = build_refresh_cmd(&client_id, &client_secret, &refresh_token);
+            let pid = ctx_msg.plugin_id.clone();
+            let client_id_opt = ctx_msg.setting_str("client_id");
             let tx_inner = tx_mailbox.clone();
-            ctx_msg.run(refresh_cmd, &tx_inner, move |res| {
-                if res.code != Some(0) {
-                    return EmailMsg::ErrorOccurred("AUTH ERROR".to_string());
+            std::thread::spawn(move || {
+                let refresh_token = nevermore_ui::plugin_api::secret_lookup(&pid, "gmail_refresh_token")
+                    .or_else(|| std::env::var("GMAIL_REFRESH_TOKEN").ok())
+                    .unwrap_or_default();
+
+                if refresh_token.is_empty() {
+                    tx_inner.send(EmailMsg::ErrorOccurred("NOT CONFIGURED".to_string()));
+                    return;
                 }
-                if let Ok(token_json) = serde_json::from_str::<serde_json::Value>(&res.stdout) {
-                    if let Some(new_access) = token_json["access_token"].as_str() {
-                        return EmailMsg::TokenRefreshed {
-                            token: new_access.to_string(),
-                        };
-                    }
-                }
-                EmailMsg::ErrorOccurred("TOKEN ERROR".to_string())
+
+                let client_id = client_id_opt
+                    .or_else(|| std::env::var("GMAIL_CLIENT_ID").ok())
+                    .unwrap_or_default();
+                let client_secret = nevermore_ui::plugin_api::secret_lookup(&pid, "client_secret")
+                    .or_else(|| std::env::var("GMAIL_CLIENT_SECRET").ok())
+                    .unwrap_or_default();
+
+                tx_inner.send(EmailMsg::CredentialsLoaded {
+                    refresh_token,
+                    client_id,
+                    client_secret,
+                });
             });
         }
         EmailMsg::ErrorOccurred(_err) => {
@@ -446,12 +475,29 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 }
 
 fn wait_for_redirect_code(listener: TcpListener) -> Result<String, String> {
-    listener.set_nonblocking(false).ok();
-    let (mut stream, _) = listener
-        .accept()
-        .map_err(|e| format!("Accept failed: {}", e))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Nonblocking setup failed: {}", e))?;
+    let start = std::time::Instant::now();
+    let deadline = Duration::from_secs(120);
 
-    let mut buf = [0u8; 2048];
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(conn) => break conn,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() > deadline {
+                    return Err("OAuth authorization timed out after 120s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("Accept failed: {}", e)),
+        }
+    };
+
+    stream.set_nonblocking(false).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+
+    let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).map_err(|e| format!("Read failed: {}", e))?;
     let req_str = String::from_utf8_lossy(&buf[..n]);
 

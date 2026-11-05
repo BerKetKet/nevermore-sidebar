@@ -355,6 +355,18 @@ def plan_musicbee_migration(musicbee_source_dir: str):
 
     return resolved_entries
 
+def get_unique_path(base_dir: str, filename: str) -> str:
+    target = os.path.join(base_dir, filename)
+    if not os.path.exists(target):
+        return target
+    name, ext = os.path.splitext(filename)
+    idx = 1
+    while True:
+        cand = os.path.join(base_dir, f"{name}_{idx}{ext}")
+        if not os.path.exists(cand):
+            return cand
+        idx += 1
+
 def main():
     parser = argparse.ArgumentParser(description="Unified Music Library Migration, Organization, & Import Tool")
     parser.add_argument("--migrate-musicbee", action="store_true", help="Execute or plan migration from MusicBee legacy directory")
@@ -482,64 +494,184 @@ def main():
 
         sys.exit(0)
 
-    # 3. ONGOING IMPORT MODE (L7)
+    # 3. ONGOING IMPORT MODE (L7/R1)
     if not args.paths:
         parser.print_help()
         sys.exit(0)
 
     target_music_dir = os.path.expanduser("~/Music")
-    imported_count = 0
+    inbox_dir = os.path.expanduser("~/Music-Inbox")
+    needs_tags_dir = os.path.join(inbox_dir, "needs-tags")
+    duplicates_dir = os.path.join(inbox_dir, "duplicates")
+    conflicts_dir = os.path.join(inbox_dir, "conflicts")
 
+    imported_count = 0
+    duplicate_count = 0
+    conflict_count = 0
+    quarantine_count = 0
+
+    all_files_to_import = []
     for path in args.paths:
         if not os.path.exists(path):
             print(f"Warning: '{path}' does not exist, skipping.", file=sys.stderr)
             continue
-
         if os.path.isfile(path):
-            files_to_import = [path]
+            all_files_to_import.append(path)
         else:
-            files_to_import = []
             for root, _, fs in os.walk(path):
-                for f in fs:
-                    files_to_import.append(os.path.join(root, f))
+                for f in sorted(fs):
+                    all_files_to_import.append(os.path.join(root, f))
 
-        for src_file in files_to_import:
-            _, ext = os.path.splitext(src_file.lower())
-            if ext in AUDIO_EXTENSIONS:
-                tags = extract_tags(src_file)
-                album_artist = tags['album_artist'] or tags['artist'] or "Unknown Artist"
-                if tags['is_compilation']:
-                    album_artist = "Various Artists"
-                album_artist_clean = sanitize_component(album_artist)
-                album_clean = sanitize_component(tags['album'] or "Unknown Album")
-                title_clean = sanitize_component(tags['title'] or os.path.splitext(os.path.basename(src_file))[0])
+    # Process audio tracks first, keeping track of destination album folders
+    album_target_map = {} # src_dir -> dest_album_dir
+    seen_dest_paths = {} # dest_path -> (src_file, sha256)
+    sidecars_to_process = []
+    covers_to_process = []
 
-                if tags['year']:
-                    album_folder = sanitize_component(f"{tags['year']} - {album_clean}")
+    for src_file in all_files_to_import:
+        src_stem, ext = os.path.splitext(src_file.lower())
+        src_dir = os.path.dirname(src_file)
+
+        if ext in ('.lrc', '.cue'):
+            sidecars_to_process.append(src_file)
+            continue
+
+        if ext in ('.jpg', '.png', '.jpeg'):
+            base_lower = os.path.splitext(os.path.basename(src_file).lower())[0]
+            if base_lower in PRIMARY_COVER_NAMES or 'cover' in base_lower or 'front' in base_lower:
+                covers_to_process.append(src_file)
+            continue
+
+        if ext not in AUDIO_EXTENSIONS:
+            continue
+
+        tags = extract_tags(src_file)
+        # Check required tags: artist/albumartist, album, title
+        has_artist = bool(tags['album_artist'] or tags['artist'])
+        has_album = bool(tags['album'])
+        has_title = bool(tags['title'])
+
+        if not (has_artist and has_album and has_title):
+            # Missing essential tags: quarantine to ~/Music-Inbox/needs-tags/
+            dest_path = get_unique_path(needs_tags_dir, os.path.basename(src_file))
+            if args.dry_run:
+                print(f"[DRY-RUN] [NEEDS-TAGS] {src_file} -> {dest_path}")
+            else:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                if args.move:
+                    shutil.move(src_file, dest_path)
                 else:
-                    album_folder = album_clean
+                    shutil.copy2(src_file, dest_path)
+            quarantine_count += 1
+            continue
 
-                disc_p = f"{tags['disc']}-" if tags['disc'] and tags['disc'] > 1 else ""
-                track_p = f"{disc_p}{tags['track']:02d} - " if tags['track'] is not None else ""
-                track_fname = sanitize_component(f"{track_p}{title_clean}") + ext
-                dest_path = os.path.join(target_music_dir, album_artist_clean, album_folder, track_fname)
+        album_artist = tags['album_artist'] or tags['artist']
+        if tags['is_compilation']:
+            album_artist = "Various Artists"
+        album_artist_clean = sanitize_component(album_artist)
+        album_clean = sanitize_component(tags['album'])
+        title_clean = sanitize_component(tags['title'])
 
+        if tags['year']:
+            album_folder = sanitize_component(f"{tags['year']} - {album_clean}")
+        else:
+            album_folder = album_clean
+
+        disc_p = f"{tags['disc']}-" if tags['disc'] and tags['disc'] > 1 else ""
+        track_p = f"{disc_p}{tags['track']:02d} - " if tags['track'] is not None else ""
+        track_fname = sanitize_component(f"{track_p}{title_clean}") + ext
+
+        dest_album_dir = os.path.join(target_music_dir, album_artist_clean, album_folder)
+        dest_path = os.path.join(dest_album_dir, track_fname)
+        album_target_map[src_dir] = dest_album_dir
+
+        src_hash = compute_sha256(src_file)
+
+        # Check collision with already planned/imported track in this batch or existing on disk
+        if dest_path in seen_dest_paths or os.path.exists(dest_path):
+            if dest_path in seen_dest_paths:
+                prev_src, prev_hash = seen_dest_paths[dest_path]
+            else:
+                prev_src, prev_hash = dest_path, compute_sha256(dest_path)
+
+            if src_hash == prev_hash:
+                # Identical duplicate
+                duplicate_count += 1
                 if args.dry_run:
-                    print(f"[DRY-RUN] {src_file} -> {dest_path}")
+                    print(f"[DRY-RUN] [DUPLICATE] {src_file} (matches {dest_path})")
+                elif args.move:
+                    dup_target = get_unique_path(duplicates_dir, os.path.basename(src_file))
+                    os.makedirs(os.path.dirname(dup_target), exist_ok=True)
+                    shutil.move(src_file, dup_target)
+                continue
+            else:
+                # Collision with different hash -> conflict
+                conflict_count += 1
+                conf_target = get_unique_path(conflicts_dir, os.path.basename(src_file))
+                if args.dry_run:
+                    print(f"[DRY-RUN] [CONFLICT] {src_file} -> {conf_target}")
                 else:
-                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    os.makedirs(os.path.dirname(conf_target), exist_ok=True)
                     if args.move:
-                        os.rename(src_file, dest_path)
+                        shutil.move(src_file, conf_target)
                     else:
-                        shutil.copy2(src_file, dest_path)
-                        # Verify SHA-256
-                        if compute_sha256(src_file) != compute_sha256(dest_path):
-                            print(f"Error: SHA-256 mismatch for {dest_path}!", file=sys.stderr)
-                            sys.exit(1)
-                    imported_count += 1
+                        shutil.copy2(src_file, conf_target)
+                continue
 
+        seen_dest_paths[dest_path] = (src_file, src_hash)
+
+        # Normal import
+        if args.dry_run:
+            print(f"[DRY-RUN] {src_file} -> {dest_path}")
+        else:
+            os.makedirs(dest_album_dir, exist_ok=True)
+            if args.move:
+                shutil.move(src_file, dest_path)
+            else:
+                shutil.copy2(src_file, dest_path)
+                if compute_sha256(dest_path) != src_hash:
+                    print(f"Error: SHA-256 mismatch for {dest_path}!", file=sys.stderr)
+                    sys.exit(1)
+        imported_count += 1
+
+    # Process matching sidecars (.lrc, .cue)
+    for sidecar in sidecars_to_process:
+        s_dir = os.path.dirname(sidecar)
+        s_stem, s_ext = os.path.splitext(os.path.basename(sidecar))
+        dest_album_dir = album_target_map.get(s_dir)
+        if dest_album_dir:
+            # Look for a track in dest_album_dir with matching or sanitize-matching stem
+            dest_sidecar = os.path.join(dest_album_dir, f"{sanitize_component(s_stem)}{s_ext}")
+            if not os.path.exists(dest_sidecar):
+                if args.dry_run:
+                    print(f"[DRY-RUN] [SIDECAR] {sidecar} -> {dest_sidecar}")
+                else:
+                    os.makedirs(dest_album_dir, exist_ok=True)
+                    if args.move:
+                        shutil.move(sidecar, dest_sidecar)
+                    else:
+                        shutil.copy2(sidecar, dest_sidecar)
+
+    # Process album covers (cover/folder/front.{jpg,png} -> cover.{jpg,png})
+    for cover in covers_to_process:
+        c_dir = os.path.dirname(cover)
+        dest_album_dir = album_target_map.get(c_dir)
+        if dest_album_dir:
+            c_ext = os.path.splitext(cover.lower())[1]
+            out_ext = ".png" if c_ext == ".png" else ".jpg"
+            dest_cover = os.path.join(dest_album_dir, f"cover{out_ext}")
+            if not os.path.exists(dest_cover):
+                if args.dry_run:
+                    print(f"[DRY-RUN] [COVER] {cover} -> {dest_cover}")
+                else:
+                    os.makedirs(dest_album_dir, exist_ok=True)
+                    if args.move:
+                        shutil.move(cover, dest_cover)
+                    else:
+                        shutil.copy2(cover, dest_cover)
+
+    print(f"\n[+] Import complete: {imported_count} tracks imported, {duplicate_count} duplicates skipped/moved, {conflict_count} conflicts diverted, {quarantine_count} quarantined.")
     if not args.dry_run and imported_count > 0:
-        print(f"[+] Imported {imported_count} tracks into {target_music_dir}")
         os.system("mpc update >/dev/null 2>&1 || true")
 
 if __name__ == "__main__":

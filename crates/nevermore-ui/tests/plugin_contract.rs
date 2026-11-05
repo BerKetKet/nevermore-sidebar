@@ -289,7 +289,7 @@ fn run_lifecycle_pump_and_cleanup() {
 
     for (spec, build_fn) in plugins {
         let mut adapter = SpecPluginAdapter::new(*spec, *build_fn, &ctx);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _widget = adapter.build_widget(&ctx);
 
             adapter.on_show();
@@ -319,6 +319,11 @@ fn run_lifecycle_pump_and_cleanup() {
             let dummy_palette = nevermore_core::theme::ThemePalette::default();
             adapter.on_theme_changed(&dummy_palette);
         }));
+        assert!(
+            res.is_ok(),
+            "Plugin '{}' panicked or failed timer cleanup during lifecycle test",
+            spec.id
+        );
     }
 
     let _ = fs::remove_dir_all(&temp);

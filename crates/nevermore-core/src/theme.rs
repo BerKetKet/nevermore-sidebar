@@ -788,6 +788,10 @@ window {{
     border-left: 3px solid {accent_color};
 }}
 
+.nav-btn.active .nm-icon {{
+    color: {accent_color};
+}}
+
 /* Header Bar */
 .sidebar-header {{
     background-color: {bg_primary};
@@ -836,6 +840,10 @@ window {{
     background-color: {accent_color};
     color: {accent_fg};
     border-color: {accent_color};
+}}
+
+.btn-header-pin.pinned .nm-icon {{
+    color: {accent_fg};
 }}
 
 .btn-header-close {{

@@ -28,12 +28,27 @@ pub struct KeepOnHide(pub bool);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingKind {
-    Text,
-    Secret,
-    Bool,
-    Int,
-    Choice(&'static [&'static str]),
-    Path,
+    Text {
+        default: &'static str,
+    },
+    Path {
+        default: &'static str,
+    },
+    Int {
+        default: i64,
+        min: i64,
+        max: i64,
+    },
+    Bool {
+        default: bool,
+    },
+    Choice {
+        options: &'static [&'static str],
+        default: &'static str,
+    },
+    Secret {
+        key_name: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

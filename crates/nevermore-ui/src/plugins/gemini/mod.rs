@@ -1,4 +1,6 @@
 use nevermore_ui::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub const GEMINI_MODELS: &[&str] = &[
     "gemini-2.5-flash",
@@ -9,11 +11,20 @@ pub const GEMINI_MODELS: &[&str] = &[
 ];
 
 pub const SETTINGS: &[SettingSpec] = &[
-    SettingSpec::new("gemini_api_key", "Gemini API Key", SettingKind::Secret),
+    SettingSpec::new(
+        "gemini_api_key",
+        "Gemini API Key",
+        SettingKind::Secret {
+            key_name: "gemini_api_key",
+        },
+    ),
     SettingSpec::new(
         "model",
         "Gemini Model",
-        SettingKind::Choice(GEMINI_MODELS),
+        SettingKind::Choice {
+            options: GEMINI_MODELS,
+            default: "gemini-3-flash-preview",
+        },
     ),
 ];
 
@@ -41,44 +52,33 @@ pub struct ChatHistory {
 
 #[derive(Clone, Debug)]
 pub enum GeminiMsg {
+    KeyChecked(Option<String>),
     ReplyReceived { prompt: String, reply: String },
     ErrorOccurred(String),
     HistoryCleared,
 }
 
-fn get_api_key(ctx: &PluginContext) -> Option<String> {
-    if let Some(key) = ctx.secret_get_blocking("gemini_api_key") {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    if let Ok(key) = std::env::var("GEMINI_API_KEY") {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    None
-}
-
 pub fn build(ctx: &PluginContext) -> gtk4::Widget {
-    let api_key = get_api_key(ctx);
+    let initial_key = std::env::var("GEMINI_API_KEY")
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
+    let cached_key: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(initial_key.clone()));
     let history: ChatHistory = ctx.load_json("chat_history");
 
     // 1. Status & Header Card
-    let status_dot = nm_status_dot(if api_key.is_some() {
+    let status_dot = nm_status_dot(if initial_key.is_some() {
         Tone::Success
     } else {
         Tone::Warning
     });
 
-    let status_label = nm_data_label(if api_key.is_some() {
+    let status_label = nm_data_label(if initial_key.is_some() {
         "ONLINE"
     } else {
         "KEY MISSING"
     });
-    status_label.set_tone(if api_key.is_some() {
+    status_label.set_tone(if initial_key.is_some() {
         Tone::Success
     } else {
         Tone::Warning
@@ -108,7 +108,9 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             let empty = nm_empty_state("gemini", "No conversation history");
             container.append(&empty);
         } else {
-            for turn in turns.iter().rev().take(10) {
+            // Natural reading order: display turns chronologically, showing the last 10 turns
+            let start_idx = turns.len().saturating_sub(10);
+            for turn in &turns[start_idx..] {
                 let is_user = turn.role == "user";
                 let icon_name = if is_user { "terminal" } else { "gemini" };
                 let turn_icon = nm_icon(icon_name, if is_user { Tone::Secondary } else { Tone::Accent }, 16);
@@ -150,9 +152,26 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
     // 3. Mailbox Handler
     let box_for_msg = chat_box.clone();
     let status_for_msg = status_label.clone();
+    let status_dot_for_msg = status_dot;
+    let cached_key_for_msg = cached_key.clone();
     let ctx_save = ctx.clone();
 
     let tx = ctx.mailbox(move |msg: GeminiMsg, _tx| match msg {
+        GeminiMsg::KeyChecked(key) => {
+            let has_key = key.is_some();
+            *cached_key_for_msg.borrow_mut() = key;
+            status_dot_for_msg.set_tone(if has_key {
+                Tone::Success
+            } else {
+                Tone::Warning
+            });
+            status_for_msg.set(if has_key { "ONLINE" } else { "KEY MISSING" });
+            status_for_msg.set_tone(if has_key {
+                Tone::Success
+            } else {
+                Tone::Warning
+            });
+        }
         GeminiMsg::ReplyReceived { prompt, reply } => {
             status_for_msg.set("READY");
             status_for_msg.set_tone(Tone::Success);
@@ -196,10 +215,11 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         clear_tx.send(GeminiMsg::HistoryCleared);
     });
 
-    // 4. Prompt Entry (activates ONLY on Enter / submit button and clears text)
-    let prompt_tx = tx;
+    // 4. Prompt Entry
+    let prompt_tx = tx.clone();
     let status_for_prompt = status_label.clone();
-    let ctx_run = ctx.clone();
+    let ctx_submit = ctx.clone();
+    let cached_key_for_submit = cached_key;
 
     let prompt_entry = nm_prompt_entry("gemini", "Prompt Gemini AI assistant...", move |query| {
         let q = query.trim().to_string();
@@ -210,21 +230,21 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         status_for_prompt.set("INFERENCE");
         status_for_prompt.set_tone(Tone::Accent);
 
-        let key_opt = get_api_key(&ctx_run);
-        if key_opt.is_none() {
-            prompt_tx.send(GeminiMsg::ErrorOccurred("KEY REQUIRED".to_string()));
-            return;
-        }
-        let key = key_opt.unwrap();
+        let key = match cached_key_for_submit.borrow().clone() {
+            Some(k) if !k.is_empty() => k,
+            _ => {
+                prompt_tx.send(GeminiMsg::ErrorOccurred("KEY REQUIRED".to_string()));
+                return;
+            }
+        };
 
-        let model = ctx_run
+        let model = ctx_submit
             .setting_str("model")
-            .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+            .unwrap_or_else(|| "gemini-3-flash-preview".to_string());
 
         let escaped_prompt = serde_json::to_string(&q).unwrap_or_else(|_| "\"\"".to_string());
         let body = format!("{{\"contents\":[{{\"parts\":[{{\"text\":{}}}]}}]}}", escaped_prompt);
 
-        // Security requirement: Never put API key in URL or argv! Pass URL and header via curl -K - stdin.
         let curl_config = format!(
             "url = \"https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent\"\nheader = \"x-goog-api-key: {}\"\nheader = \"Content-Type: application/json\"\ndata = \"{}\"\n",
             model,
@@ -239,7 +259,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
         let tx_inner = prompt_tx.clone();
         let prompt_record = q.clone();
-        ctx_run.run(cmd, &tx_inner, move |res| {
+        ctx_submit.run(cmd, &tx_inner, move |res| {
             if res.code != Some(0) {
                 return GeminiMsg::ErrorOccurred("NETWORK ERROR".to_string());
             }
@@ -251,11 +271,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                     };
                 }
                 if let Some(err_msg) = json["error"]["message"].as_str() {
-                    let err_short = if err_msg.len() > 20 {
-                        &err_msg[..20]
-                    } else {
-                        err_msg
-                    };
+                    let err_short: String = err_msg.chars().take(20).collect();
                     return GeminiMsg::ErrorOccurred(err_short.to_uppercase());
                 }
             }
@@ -263,21 +279,19 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         });
     });
 
-    // 5. Dynamic status refresh on show / every 2 seconds
-    let dot_poll = status_dot;
-    let label_poll = status_label;
-    let ctx_poll = ctx.clone();
-    ctx.every(Duration::from_secs(2), move || {
-        let has_key = get_api_key(&ctx_poll).is_some();
-        if has_key {
-            dot_poll.set_tone(Tone::Success);
-            label_poll.set("ONLINE");
-            label_poll.set_tone(Tone::Success);
-        } else {
-            dot_poll.set_tone(Tone::Warning);
-            label_poll.set("KEY MISSING");
-            label_poll.set_tone(Tone::Warning);
-        }
+    // 5. On Show: check API key in background thread
+    let tx_show = tx;
+    let plugin_id = ctx.plugin_id.clone();
+    ctx.on_show(move || {
+        let tx_bg = tx_show.clone();
+        let pid = plugin_id.clone();
+        std::thread::spawn(move || {
+            let key = nevermore_ui::plugin_api::secret_lookup(&pid, "gemini_api_key")
+                .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty());
+            tx_bg.send(GeminiMsg::KeyChecked(key));
+        });
     });
 
     // 6. Clamped Vertical Page

@@ -80,6 +80,12 @@ impl Cmd {
         self
     }
 
+    /// Executes the command synchronously on a background worker thread.
+    /// MUST NOT be called on the GTK main thread.
+    pub fn run_in_worker_thread(&self) -> CmdResult {
+        self.execute_blocking()
+    }
+
     /// Executes the command synchronously on the calling thread.
     /// Spawns in its own process group and enforces the timeout,
     /// killing the entire process group with SIGKILL if timed out.

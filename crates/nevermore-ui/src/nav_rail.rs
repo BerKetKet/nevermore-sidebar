@@ -113,16 +113,32 @@ impl NavRail {
         scroll_ctrl.connect_scroll(move |_, dx, _| {
             if let Some(n) = nav_weak.upgrade() {
                 if dx.abs() > 0.5 {
+                    let visible_tabs: Vec<&String> = n
+                        .tabs_order
+                        .iter()
+                        .filter(|id| {
+                            n.buttons
+                                .iter()
+                                .find(|(bid, _)| bid == *id)
+                                .map(|(_, btn)| btn.is_visible())
+                                .unwrap_or(false)
+                        })
+                        .collect();
+
+                    if visible_tabs.is_empty() {
+                        return glib::Propagation::Proceed;
+                    }
+
                     let cur = n.active_tab.borrow().clone();
-                    let current_idx = n.tabs_order.iter().position(|id| *id == cur).unwrap_or(0);
+                    let current_idx = visible_tabs.iter().position(|id| **id == cur).unwrap_or(0);
                     let next_idx = if dx > 0.0 {
-                        (current_idx + 1) % n.tabs_order.len()
+                        (current_idx + 1) % visible_tabs.len()
                     } else if current_idx == 0 {
-                        n.tabs_order.len() - 1
+                        visible_tabs.len() - 1
                     } else {
                         current_idx - 1
                     };
-                    let next_tab = &n.tabs_order[next_idx];
+                    let next_tab = visible_tabs[next_idx];
                     on_switch(next_tab);
                     glib::Propagation::Stop
                 } else {
