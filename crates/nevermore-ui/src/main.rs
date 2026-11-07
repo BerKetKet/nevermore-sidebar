@@ -271,9 +271,11 @@ fn main() {
                 css_provider.load_from_string(&css);
                 let is_pinned = sm.lock().unwrap().state() == SidebarState::Pinned;
                 if is_pinned {
+                    btn_pin.add_css_class("pinned");
                     let accent_fg = contrast_text_color_for_hex(&pal.accent_color);
                     icons::set_button_icon(&btn_pin, "pin-off", accent_fg, 16);
                 } else {
+                    btn_pin.remove_css_class("pinned");
                     icons::set_button_icon(&btn_pin, "pin", &pal.text_secondary, 16);
                 }
                 icons::set_button_icon(&btn_close, "x", &pal.text_secondary, 16);
@@ -306,9 +308,11 @@ fn main() {
                 css_provider.load_from_string(&css);
                 let is_pinned = sm.lock().unwrap().state() == SidebarState::Pinned;
                 if is_pinned {
+                    btn_pin.add_css_class("pinned");
                     let accent_fg = contrast_text_color_for_hex(&cur.accent_color);
                     icons::set_button_icon(&btn_pin, "pin-off", accent_fg, 16);
                 } else {
+                    btn_pin.remove_css_class("pinned");
                     icons::set_button_icon(&btn_pin, "pin", &cur.text_secondary, 16);
                 }
                 icons::set_button_icon(&btn_close, "x", &cur.text_secondary, 16);
@@ -673,16 +677,14 @@ fn main() {
             let source_id = glib::timeout_add_local(
                 std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
                 move || {
-                    ctx_timer.leave_source.borrow_mut().take();
-                    let is_suppressed = {
-                        let sm = ctx_timer.state_machine.lock().unwrap();
-                        ctx_timer.panel_hovered.get()
-                            || has_visible_popover(&ctx_timer.panel_window)
-                            || sm.active_tab() == "__settings__"
-                    };
-                    if is_suppressed {
+                    if ctx_timer.panel_hovered.get() {
+                        ctx_timer.leave_source.borrow_mut().take();
                         return glib::ControlFlow::Break;
                     }
+                    if has_visible_popover(&ctx_timer.panel_window) {
+                        return glib::ControlFlow::Continue;
+                    }
+                    ctx_timer.leave_source.borrow_mut().take();
                     let mut sm = ctx_timer.state_machine.lock().unwrap();
                     if sm.state() != SidebarState::Pinned {
                         sm.transition(SidebarEvent::PointerLeavePanel);

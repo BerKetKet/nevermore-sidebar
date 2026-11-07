@@ -681,7 +681,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
         MusicMsg::QueueUpdated {
             songs,
             current_id,
-            current_pos: _,
+            current_pos,
         } => {
             while let Some(child) = queue_list_clone.first_child() {
                 queue_list_clone.remove(&child);
@@ -717,9 +717,21 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
 
                     let ep_next = ep.clone();
                     let tx_next = tx_mailbox.clone();
-                    let cur_id_track = current_id;
+                    let song_pos_opt = s.pos;
                     next_item_btn.on_click(move || {
-                        let target_pos = cur_id_track.map(|_| 1).unwrap_or(0);
+                        let target_pos = match (current_pos, song_pos_opt) {
+                            (Some(cur_pos), Some(song_pos)) => {
+                                if song_pos == cur_pos {
+                                    return;
+                                } else if song_pos > cur_pos {
+                                    cur_pos + 1
+                                } else {
+                                    cur_pos
+                                }
+                            }
+                            (Some(cur_pos), None) => cur_pos + 1,
+                            (None, _) => 0,
+                        };
                         spawn_action(ep_next.clone(), tx_next.clone(), move |c| {
                             c.playlist_move_id(song_id, target_pos)
                         });
@@ -919,8 +931,12 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
                     next_res_btn.on_click(move || {
                         let u = uri_next.clone();
                         spawn_action(ep_next.clone(), tx_next.clone(), move |c| {
+                            let song_pos = c.status()?.song_pos;
                             let id = c.add_id(&u)?;
-                            c.playlist_move_id(id, 1)
+                            if let Some(cur_pos) = song_pos {
+                                c.playlist_move_id(id, cur_pos + 1)?;
+                            }
+                            Ok(())
                         });
                     });
 
