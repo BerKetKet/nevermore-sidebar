@@ -8,7 +8,7 @@
 ## 1. Architectural Highlights
 
 - **Wayland Native Layer-Shell:** Anchored to the right edge with `Layer::Overlay` and `exclusive_zone = -1`, guaranteeing full 1080p height and pointer-hover priority across the desktop.
-- **Companion Side-Blade (500x1080):** Dedicated companion blade window on `Layer::Overlay` anchored at `margin_right = 400` with pointer-leave auto-hide coordination for deep content (full MIME email reader, inline RFC 2822 reply composer).
+- **Strict 400px Geometry:** 60px navigation rail + 340px content area, with solid dark surfaces (`#rrggbb`) and zero idle CPU when hidden.
 - **Zero-Context Plugin SDK (`nevermore_ui::prelude::*`):** Any LLM or developer can write a self-contained ~50-line plugin in `crates/nevermore-ui/src/plugins/<id>/mod.rs` with automatic discovery (`build.rs`), automatic lifecycle-managed timers (`ctx.every`, `ctx.after_delay`), background execution (`ctx.run`, `ctx.daemon`), and typed actor mailboxes (`ctx.mailbox`).
 - **Text-Free Icon UI Chrome:** All navigation, header controls, and status badges use crisp, theme-tinted Lucide SVG icons (`nm_icon`, `nm_icon_button`, `Tone`) and accessible tooltips. Only actual user and system data is displayed as text (`.nm-data`).
 - **Crash Resilience & Session Survival:** Sub-100ms show/hide transitions, auto-restarting systemd user service (`nevermore.service`), zero memory/FD leaks, and full terminal session preservation across UI restarts via detached `tmux -L nevermore`.
@@ -21,7 +21,7 @@
 | Crate | Path | Responsibility |
 |---|---|---|
 | **`nevermore-core`** | `crates/nevermore-core` | State machine, Unix domain socket IPC, OKLab theme engine, tmux backend, systemd supervision, KWin shortcuts. |
-| **`nevermore-ui`** | `crates/nevermore-ui` | GTK4 Layer-shell windows, text-free chrome, Lucide SVG renderer, Zero-Context Plugin SDK, and 9 built-in feature tabs. |
+| **`nevermore-ui`** | `crates/nevermore-ui` | GTK4 Layer-shell windows, text-free chrome, Lucide SVG renderer, Zero-Context Plugin SDK, and 5 built-in feature tabs + settings page. |
 | **`nevermore` (CLI)** | `crates/nevermore-cli` | Zero-overhead IPC CLI for controlling the sidebar (`show`, `hide`, `toggle`, `status`, `theme`, `run`). |
 
 ---
@@ -33,10 +33,7 @@
 3. **Notifications (`notifications`):** Live FreeDesktop notification daemon listener with image-data parsing, clickable cards with KWin window activation, URL opener, per-row dismiss, and native D-Bus Do Not Disturb (DND) suppression (`Inhibit`).
 4. **Notepad (`notepad`):** Multi-note manager in `notes.json` with auto-migration from legacy text files, Wayland clipboard paste/copy, auto-derived 18-character titles, horizontal note switcher pills, and two-step danger delete.
 5. **Music Player (`music`):** Full MPD controller with 4 views (Now Playing with live audio quality badge and mode toggles; 100-track Queue with save/shuffle/clear; Synced/plain lyrics with local sidecar and LRCLIB fetch; Library search and playlist manager) + Euphonica integration.
-6. **Gemini AI (`gemini`):** Conversational AI assistant with Freedesktop Secret Service credential storage (`secret-tool`), persistent chat history, and non-blocking streaming.
-7. **YouTube (`youtube`):** Background video search via `yt-dlp` and instant hardware-accelerated playback via `mpv`.
-8. **VPN Manager (`vpn`):** Real-time Cloudflare WARP client status/toggle (`warp-cli`) and NetworkManager WireGuard profile switcher (`nmcli`).
-9. **Gmail Inbox (`email`):** Official Gmail REST API v1 unread message inbox, 6 row actions, and 500x1080 companion side-blade with full MIME reader and inline RFC 2822 reply composer.
+6. **Settings (`__settings__`):** Bottom-pinned settings page in nav rail for theme selection, custom hex accent generation, font family/size overrides, and plugin management.
 
 ---
 

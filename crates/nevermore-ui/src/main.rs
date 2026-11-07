@@ -1,4 +1,3 @@
-use nevermore_ui::companion_blade::CompanionBlade;
 use nevermore_ui::safe_source_remove;
 use nevermore_ui::{icons, ipc_server, nav_rail, plugins};
 
@@ -193,16 +192,12 @@ fn main() {
         let systemd = SystemdTaskBackend::new("nevermore-task");
         let kwin = KWinAdapter::new();
 
-        // 3B. Companion Side-Blade Window (500x1080 at margin_right = 400)
-        let companion_blade = Rc::new(CompanionBlade::new(app, &primary_monitor, monitor_height));
-
         // 4. Modular Plugin Architecture Registry
         let registry = Rc::new(RefCell::new(create_default_registry(
             theme_cell.clone(),
             tmux.clone(),
             systemd.clone(),
             kwin.clone(),
-            Some(companion_blade.clone()),
         )));
 
         // P1-2: Synchronize dynamic registered plugins with state machine (including built-in settings)
@@ -371,7 +366,6 @@ fn main() {
         struct UiContext {
             hot_edge_window: ApplicationWindow,
             panel_window: ApplicationWindow,
-            companion_blade: Rc<CompanionBlade>,
             state_machine: Arc<Mutex<SidebarStateMachine>>,
             btn_pin: Button,
             btn_close: Button,
@@ -388,7 +382,6 @@ fn main() {
         let ctx = Rc::new(UiContext {
             hot_edge_window: hot_edge_window.clone(),
             panel_window: panel_window.clone(),
-            companion_blade: companion_blade.clone(),
             state_machine: state_machine.clone(),
             btn_pin: btn_pin.clone(),
             btn_close: btn_close.clone(),
@@ -412,8 +405,6 @@ fn main() {
                 let is_visible = state.is_visible();
                 drop(sm);
 
-                ctx.companion_blade.hide_if_plugin_differs(&active_tab);
-
                 ctx.content_stack.set_visible_child_name(&active_tab);
                 if let Some(ref nr) = *ctx.nav_rail.borrow() {
                     nr.set_active_tab(&active_tab);
@@ -435,7 +426,6 @@ fn main() {
 
                 match state {
                     SidebarState::Hidden => {
-                        ctx.companion_blade.close();
                         ctx.panel_window.set_visible(false);
                         ctx.hot_edge_window.set_visible(true);
                         ctx.hot_edge_window.present();
@@ -687,8 +677,6 @@ fn main() {
                     let is_suppressed = {
                         let sm = ctx_timer.state_machine.lock().unwrap();
                         ctx_timer.panel_hovered.get()
-                            || ctx_timer.companion_blade.is_hovered()
-                            || ctx_timer.companion_blade.is_open()
                             || has_visible_popover(&ctx_timer.panel_window)
                             || sm.active_tab() == "__settings__"
                     };
@@ -708,65 +696,12 @@ fn main() {
         });
         panel_window.add_controller(panel_motion);
 
-        // Motion Controller on Companion Blade Window (coordinating pointer-leave with main panel)
-        let blade_ctrl = EventControllerMotion::new();
-        let ctx_blade_enter = ctx.clone();
-        let blade_enter_ref = companion_blade.clone();
-        blade_ctrl.connect_enter(move |_, _, _| {
-            blade_enter_ref.set_hovered(true);
-            if let Some(src) = ctx_blade_enter.peek_grace_source.borrow_mut().take() {
-                safe_source_remove(src);
-            }
-            if let Some(source_id) = ctx_blade_enter.leave_source.borrow_mut().take() {
-                safe_source_remove(source_id);
-            }
-        });
-
-        let ctx_blade_leave = ctx.clone();
-        let apply_blade_leave = apply_state.clone();
-        let blade_leave_ref = companion_blade.clone();
-        blade_ctrl.connect_leave(move |_| {
-            blade_leave_ref.set_hovered(false);
-            if let Some(source_id) = ctx_blade_leave.leave_source.borrow_mut().take() {
-                safe_source_remove(source_id);
-            }
-            let ctx_timer = ctx_blade_leave.clone();
-            let apply_timer_cb = apply_blade_leave.clone();
-            let source_id = glib::timeout_add_local(
-                std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
-                move || {
-                    ctx_timer.leave_source.borrow_mut().take();
-                    let is_suppressed = {
-                        let sm = ctx_timer.state_machine.lock().unwrap();
-                        ctx_timer.panel_hovered.get()
-                            || ctx_timer.companion_blade.is_hovered()
-                            || ctx_timer.companion_blade.is_open()
-                            || has_visible_popover(&ctx_timer.panel_window)
-                            || sm.active_tab() == "__settings__"
-                    };
-                    if is_suppressed {
-                        return glib::ControlFlow::Break;
-                    }
-                    let mut sm = ctx_timer.state_machine.lock().unwrap();
-                    if sm.state() != SidebarState::Pinned {
-                        sm.transition(SidebarEvent::PointerLeavePanel);
-                        drop(sm);
-                        apply_timer_cb();
-                    }
-                    glib::ControlFlow::Break
-                },
-            );
-            *ctx_blade_leave.leave_source.borrow_mut() = Some(source_id);
-        });
-        companion_blade.window().add_controller(blade_ctrl);
-
         // Key Controller (Escape key to hide or un-focus)
         let key_ctrl = EventControllerKey::new();
         let apply_key = apply_state.clone();
         let ctx_key = ctx.clone();
         key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gdk::Key::Escape {
-                ctx_key.companion_blade.close();
                 if let Some(src) = ctx_key.peek_grace_source.borrow_mut().take() {
                     safe_source_remove(src);
                 }

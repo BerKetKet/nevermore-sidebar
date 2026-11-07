@@ -43,18 +43,8 @@ pub struct NotificationItem {
     pub timestamp_unix: u64,
 }
 
-/// The 9 canonical first-release tab identifiers for Nevermore.
-pub const CANONICAL_TABS: &[&str] = &[
-    "terminal",
-    "widgets",
-    "notifications",
-    "notepad",
-    "media",
-    "gemini",
-    "youtube",
-    "vpn",
-    "email",
-];
+/// The 5 canonical tab identifiers for Nevermore.
+pub const CANONICAL_TABS: &[&str] = &["terminal", "widgets", "notifications", "notepad", "music"];
 
 /// Validates whether a given string matches one of the canonical 9 tabs.
 pub fn is_valid_tab(tab: &str) -> bool {

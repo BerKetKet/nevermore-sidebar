@@ -148,55 +148,50 @@ pub fn create_default_registry(
     tmux: nevermore_core::TmuxBackend,
     systemd: nevermore_core::SystemdTaskBackend,
     kwin: nevermore_core::KWinAdapter,
-    blade: Option<Rc<crate::companion_blade::CompanionBlade>>,
 ) -> PluginRegistry {
     let mut registry = PluginRegistry::new();
 
     // 1. Terminal
-    let mut ctx_term = PluginContext::new(
+    let ctx_term = PluginContext::new(
         "terminal",
         theme.clone(),
         tmux.clone(),
         systemd.clone(),
         kwin.clone(),
     );
-    ctx_term.blade = blade.clone();
     registry.register(Box::new(terminal::TerminalPlugin::new()), &ctx_term);
 
     // 2. Widgets
-    let mut ctx_widg = PluginContext::new(
+    let ctx_widg = PluginContext::new(
         "widgets",
         theme.clone(),
         tmux.clone(),
         systemd.clone(),
         kwin.clone(),
     );
-    ctx_widg.blade = blade.clone();
     registry.register(Box::new(widgets::WidgetsPlugin::new()), &ctx_widg);
 
     // 3. Notifications
-    let mut ctx_notif = PluginContext::new(
+    let ctx_notif = PluginContext::new(
         "notifications",
         theme.clone(),
         tmux.clone(),
         systemd.clone(),
         kwin.clone(),
     );
-    ctx_notif.blade = blade.clone();
     registry.register(
         Box::new(notifications::NotificationsPlugin::new()),
         &ctx_notif,
     );
 
     // 4. Notepad
-    let mut ctx_note = PluginContext::new(
+    let ctx_note = PluginContext::new(
         "notepad",
         theme.clone(),
         tmux.clone(),
         systemd.clone(),
         kwin.clone(),
     );
-    ctx_note.blade = blade.clone();
     registry.register(Box::new(notepad::NotepadPlugin::new()), &ctx_note);
 
     // 5+ Auto-discovered plugins via build.rs
@@ -206,7 +201,6 @@ pub fn create_default_registry(
         tmux.clone(),
         systemd.clone(),
         kwin.clone(),
-        blade,
     );
 
     registry.sort_by_order();

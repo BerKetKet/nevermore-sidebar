@@ -84,7 +84,6 @@ fn main() {
     code.push_str("    tmux: nevermore_core::TmuxBackend,\n");
     code.push_str("    systemd: nevermore_core::SystemdTaskBackend,\n");
     code.push_str("    kwin: nevermore_core::KWinAdapter,\n");
-    code.push_str("    blade: Option<std::rc::Rc<crate::companion_blade::CompanionBlade>>,\n");
     code.push_str(") {\n");
     code.push_str("    let mut plugins: Vec<(crate::sdk::types::PluginSpec, fn(&crate::plugin_api::PluginContext) -> gtk4::Widget)> = ALL_DISCOVERED_PLUGINS.to_vec();\n");
     code.push_str("    plugins.sort_by(|(a, _), (b, _)| a.order.cmp(&b.order).then_with(|| a.id.cmp(b.id)));\n");
@@ -122,14 +121,13 @@ fn main() {
     code.push_str("            eprintln!(\"[nevermore-plugin] Plugin '{}' is disabled in config.toml, skipping\", spec.id);\n");
     code.push_str("            continue;\n");
     code.push_str("        }\n");
-    code.push_str("        let mut ctx = crate::plugin_api::PluginContext::new(\n");
+    code.push_str("        let ctx = crate::plugin_api::PluginContext::new(\n");
     code.push_str("            spec.id,\n");
     code.push_str("            theme.clone(),\n");
     code.push_str("            tmux.clone(),\n");
     code.push_str("            systemd.clone(),\n");
     code.push_str("            kwin.clone(),\n");
     code.push_str("        );\n");
-    code.push_str("        ctx.blade = blade.clone();\n");
     code.push_str("        let adapter = crate::sdk::lifecycle::SpecPluginAdapter::new(spec, build_fn, &ctx);\n");
     code.push_str("        registry.register(Box::new(adapter), &ctx);\n");
     code.push_str("    }\n");

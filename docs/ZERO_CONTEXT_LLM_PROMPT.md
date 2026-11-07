@@ -120,10 +120,6 @@ Each plugin receives `ctx: &PluginContext` granting safe host capabilities:
 - `ctx.stream(cmd, tx, on_line, on_exit)`: Runs command streaming stdout/stderr line-by-line.
 - `ctx.daemon(cmd, keep_on_hide)`: Spawns and manages a long-running background child process.
 
-### Companion Side-Blade (500x1080 Overlay Window)
-- `ctx.open_companion_blade(title, widget)`: Opens the dedicated 500x1080 companion side-blade at `margin_right = 400` on `Layer::Overlay` without auto-hiding the 400px main sidebar.
-- `ctx.close_companion_blade()`: Closes the companion side-blade.
-
 ### Safe Command Builder (`Cmd`)
 ```rust
 let cmd = Cmd::new("playerctl")

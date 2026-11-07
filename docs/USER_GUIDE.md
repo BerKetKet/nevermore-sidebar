@@ -8,7 +8,7 @@ Welcome to **Nevermore**, the right-edge Wayland sidebar and productivity hub fo
 
 ### Mouse & Gesture Navigation
 - **Right-Edge Hover:** Move your cursor to the extreme right edge of the primary display (`x = 1919..1920`) to reveal the sidebar in **Peek** mode (passive view, keyboard focus remains on your active window).
-- **Click to Engage:** Clicking anywhere on the sidebar transitions it into **Engaged** mode, granting keyboard focus to the active tab (e.g., typing in the Terminal, Gemini composer, or Notepad).
+- **Click to Engage:** Clicking anywhere on the sidebar transitions it into **Engaged** mode, granting keyboard focus to the active tab (e.g., typing in the Terminal or Notepad).
 - **Pin / Unpin:** Click the Pin icon button in the header bar. When pinned, the sidebar remains visible even if your mouse leaves the window.
 - **Escape to Dismiss:** Pressing `Esc` while the sidebar is focused immediately hides it and returns focus to your desktop.
 
@@ -22,14 +22,11 @@ Nevermore comes with a lightning-fast Unix domain socket client (`nevermore`):
 ```bash
 # Show sidebar on a specific tab
 nevermore show terminal
-nevermore show media
-nevermore show gemini
-nevermore show youtube
-nevermore show vpn
-nevermore show email
+nevermore show widgets
 nevermore show notifications
 nevermore show notepad
-nevermore show widgets
+nevermore show music
+nevermore show __settings__
 
 # Hide sidebar
 nevermore hide
@@ -80,35 +77,18 @@ nevermore theme expand "#89b4fa"
 - Auto-saves atomically on every keystroke to `~/.local/share/nevermore/plugins/notepad/notes.txt`.
 - Fully crash-resilient with backup restoration on corrupt read.
 
-### 3.5 Media Player Tab (`media`)
-- Scans `~/Music` and `~/Videos` for audio and video media files.
-- High-efficiency playback powered by `mpv` with Intel VA-API hardware decoding (`--hwdec=vaapi --vo=gpu`).
-- Complete playback controls (Play, Pause, Previous, Next, Seek slider, Volume).
-- Remembers active playlist, track index, and playback position across restarts.
+### 3.5 Music Player Tab (`music`)
+- High-performance MPD controller with 4 views (Now Playing, Queue, Lyrics, Library).
+- Live album art rendering with dominant color palette derivation.
+- Synchronized `.lrc` and plain-text lyrics viewer with LRCLIB auto-fetching.
+- Full 100-track queue view with reordering, "Play Next", shuffle, and save-to-playlist.
+- Library search across Artist, Album, Title with instant add/replace actions.
 
-### 3.6 Gemini AI Tab (`gemini`)
-- Conversational AI powered by Google Gemini API.
-- Non-blocking asynchronous query execution with conversational history saved to `~/.local/share/nevermore/plugins/gemini/chat_history.json`.
-- **API Key Configuration:**
-  - Securely store your Gemini API key in Freedesktop Secret Service (recommended):
-    ```bash
-    secret-tool store --label="Gemini API Key" service nevermore account gemini_api_key
-    ```
-  - Alternatively, export `GEMINI_API_KEY="your-api-key"` in your shell environment.
-
-### 3.7 YouTube Tab (`youtube`)
-- Fast video search powered by `yt-dlp --flat-playlist`.
-- Launch hardware-accelerated playback with zero browser CPU overhead using `mpv --hwdec=vaapi`.
-
-### 3.8 VPN Tab (`vpn`)
-- **Cloudflare WARP:** One-click connect/disconnect button reflecting real-time connection state (`warp-cli status`).
-- **WireGuard / NetworkManager:** Discovers and activates configured NetworkManager WireGuard profiles with a single click.
-- For instructions on importing `.conf` files, consult `docs/VPN_SETUP_GUIDE.md`.
-
-### 3.9 Gmail Inbox Tab (`email`)
-- Displays unread message counts and recent inbox envelope summaries via official Gmail REST API v1.
-- One-click thread launcher in browser and direct mark-as-read action.
-- Guaranteed 0.0% background idle CPU when hidden.
+### 3.6 Settings Page (`__settings__`)
+- Bottom-pinned settings icon on the navigation rail.
+- Live theme selector with OKLab palette generation from custom hex seeds.
+- UI font and monospace font configuration with live previews.
+- Plugin management and status toggles.
 
 ---
 
@@ -120,4 +100,3 @@ nevermore theme expand "#89b4fa"
 | `~/.local/share/nevermore/plugins/` | Persistent state storage per plugin |
 | `~/.config/systemd/user/nevermore.service` | Systemd service definition |
 | `$XDG_RUNTIME_DIR/nevermore/nevermore.sock` | Unix domain socket IPC endpoint |
-| `$XDG_RUNTIME_DIR/nevermore/mpv.sock` | Media player IPC socket |
