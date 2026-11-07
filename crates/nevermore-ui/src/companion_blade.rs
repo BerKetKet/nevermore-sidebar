@@ -102,6 +102,10 @@ impl CompanionBlade {
         self.window.is_visible()
     }
 
+    pub fn is_open(&self) -> bool {
+        self.is_visible()
+    }
+
     pub fn open(&self, plugin_id: &str, widget: &Widget) {
         while let Some(child) = self.content_box.first_child() {
             self.content_box.remove(&child);

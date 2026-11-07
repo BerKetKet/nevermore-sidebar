@@ -6,6 +6,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+pub fn safe_source_remove(id: glib::SourceId) {
+    if glib::MainContext::default()
+        .find_source_by_id(&id)
+        .is_some()
+    {
+        id.remove();
+    }
+}
+
 pub struct PluginTimer {
     pub interval: Duration,
     pub callback: Rc<dyn Fn()>,
@@ -105,7 +114,7 @@ impl PluginLifecycle {
         for timer in &mut self.timers {
             if !timer.keep_on_hide {
                 if let Some(source) = timer.source_id.take() {
-                    source.remove();
+                    safe_source_remove(source);
                 }
             }
         }
@@ -128,7 +137,7 @@ impl Drop for PluginLifecycle {
     fn drop(&mut self) {
         for timer in &mut self.timers {
             if let Some(source) = timer.source_id.take() {
-                source.remove();
+                safe_source_remove(source);
             }
         }
         for proc in &self.processes {

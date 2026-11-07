@@ -9,3 +9,5 @@ pub mod plugins;
 pub mod prelude;
 pub mod sdk;
 pub mod settings_page;
+
+pub use sdk::lifecycle::safe_source_remove;

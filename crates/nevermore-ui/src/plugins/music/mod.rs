@@ -1269,7 +1269,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             }
             *is_seeking.borrow_mut() = true;
             if let Some(source) = debounce.borrow_mut().take() {
-                source.remove();
+                safe_source_remove(source);
             }
             let ep = resolve_endpoint(&ctx_seek);
             let tx_action = tx_seek.clone();
@@ -1303,7 +1303,7 @@ pub fn build(ctx: &PluginContext) -> gtk4::Widget {
             }
             let vol = target_val.clamp(0.0, 100.0) as i32;
             if let Some(source) = debounce.borrow_mut().take() {
-                source.remove();
+                safe_source_remove(source);
             }
             let ep = resolve_endpoint(&ctx_vol);
             let tx_out = tx_vol.clone();

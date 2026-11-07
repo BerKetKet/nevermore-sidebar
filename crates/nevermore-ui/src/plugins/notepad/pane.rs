@@ -1,5 +1,6 @@
 use crate::icons;
 use crate::plugin_api::PluginContext;
+use crate::safe_source_remove;
 use gtk4::accessible::Property;
 use gtk4::gdk;
 use gtk4::gio;
@@ -290,7 +291,7 @@ impl NotepadPane {
                 p.update_counts(buf);
 
                 if let Some(src) = p.debounce_source.borrow_mut().take() {
-                    src.remove();
+                    safe_source_remove(src);
                 }
 
                 let p_deb = p.clone();
@@ -530,7 +531,7 @@ impl NotepadPane {
     /// Flushes any pending unsaved text immediately to disk (called on hide/shutdown).
     pub fn flush_save(&self) {
         if let Some(src) = self.debounce_source.borrow_mut().take() {
-            src.remove();
+            safe_source_remove(src);
         }
 
         let start = self.buffer.start_iter();

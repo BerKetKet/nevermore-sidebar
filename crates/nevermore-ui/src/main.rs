@@ -1,4 +1,5 @@
 use nevermore_ui::companion_blade::CompanionBlade;
+use nevermore_ui::safe_source_remove;
 use nevermore_ui::{icons, ipc_server, nav_rail, plugins};
 
 use gtk4::accessible::Property;
@@ -321,6 +322,24 @@ fn main() {
         content_area.append(&header);
         content_area.append(&content_stack);
 
+        // Helper to detect open popovers / dropdown menus
+        fn has_visible_popover(root: &impl IsA<gtk4::Widget>) -> bool {
+            fn check_widget(w: &gtk4::Widget) -> bool {
+                if w.is_visible() && (w.is::<gtk4::Popover>() || w.is::<gtk4::PopoverMenu>()) {
+                    return true;
+                }
+                let mut child = w.first_child();
+                while let Some(c) = child {
+                    if check_widget(&c) {
+                        return true;
+                    }
+                    child = c.next_sibling();
+                }
+                false
+            }
+            check_widget(root.as_ref())
+        }
+
         // Shared Context for Visual Updates
         struct UiContext {
             hot_edge_window: ApplicationWindow,
@@ -336,6 +355,7 @@ fn main() {
             registry: Rc<RefCell<PluginRegistry>>,
             theme: Rc<RefCell<ThemePalette>>,
             is_pinned: Cell<bool>,
+            panel_hovered: Cell<bool>,
         }
 
         let ctx = Rc::new(UiContext {
@@ -352,6 +372,7 @@ fn main() {
             registry: registry.clone(),
             theme: theme_cell.clone(),
             is_pinned: Cell::new(false),
+            panel_hovered: Cell::new(false),
         });
 
         // Single authoritative apply_state synchronizer
@@ -524,7 +545,7 @@ fn main() {
         let ctx_edge = ctx.clone();
         edge_motion.connect_enter(move |_, _, _| {
             if let Some(src) = ctx_edge.peek_grace_source.borrow_mut().take() {
-                src.remove();
+                safe_source_remove(src);
             }
 
             ctx_edge
@@ -558,7 +579,7 @@ fn main() {
         let ctx_edge_box = ctx.clone();
         edge_box_motion.connect_enter(move |_, _, _| {
             if let Some(src) = ctx_edge_box.peek_grace_source.borrow_mut().take() {
-                src.remove();
+                safe_source_remove(src);
             }
 
             ctx_edge_box
@@ -593,14 +614,17 @@ fn main() {
         let ctx_click = ctx.clone();
         click_inside.connect_pressed(move |_, _, _, _| {
             if let Some(src) = ctx_click.peek_grace_source.borrow_mut().take() {
-                src.remove();
+                safe_source_remove(src);
             }
-            ctx_click
-                .state_machine
-                .lock()
-                .unwrap()
-                .transition(SidebarEvent::PointerClickInside);
-            apply_click();
+            let cur_state = ctx_click.state_machine.lock().unwrap().state();
+            if cur_state == SidebarState::Peek || cur_state == SidebarState::Hidden {
+                ctx_click
+                    .state_machine
+                    .lock()
+                    .unwrap()
+                    .transition(SidebarEvent::PointerClickInside);
+                apply_click();
+            }
         });
         panel_window.add_controller(click_inside);
 
@@ -609,19 +633,21 @@ fn main() {
         let ctx_leave = ctx.clone();
 
         panel_motion.connect_enter(move |_, _, _| {
+            ctx_leave.panel_hovered.set(true);
             if let Some(src) = ctx_leave.peek_grace_source.borrow_mut().take() {
-                src.remove();
+                safe_source_remove(src);
             }
             if let Some(source_id) = ctx_leave.leave_source.borrow_mut().take() {
-                source_id.remove();
+                safe_source_remove(source_id);
             }
         });
 
         let ctx_timer_leave = ctx.clone();
         let apply_timer = apply_state.clone();
         panel_motion.connect_leave(move |_| {
+            ctx_timer_leave.panel_hovered.set(false);
             if let Some(source_id) = ctx_timer_leave.leave_source.borrow_mut().take() {
-                source_id.remove();
+                safe_source_remove(source_id);
             }
 
             let ctx_timer = ctx_timer_leave.clone();
@@ -631,8 +657,16 @@ fn main() {
                 std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
                 move || {
                     ctx_timer.leave_source.borrow_mut().take();
-                    if ctx_timer.companion_blade.is_hovered() {
-                        return glib::ControlFlow::Continue;
+                    let is_suppressed = {
+                        let sm = ctx_timer.state_machine.lock().unwrap();
+                        ctx_timer.panel_hovered.get()
+                            || ctx_timer.companion_blade.is_hovered()
+                            || ctx_timer.companion_blade.is_open()
+                            || has_visible_popover(&ctx_timer.panel_window)
+                            || sm.active_tab() == "__settings__"
+                    };
+                    if is_suppressed {
+                        return glib::ControlFlow::Break;
                     }
                     let mut sm = ctx_timer.state_machine.lock().unwrap();
                     if sm.state() != SidebarState::Pinned {
@@ -654,10 +688,10 @@ fn main() {
         blade_ctrl.connect_enter(move |_, _, _| {
             blade_enter_ref.set_hovered(true);
             if let Some(src) = ctx_blade_enter.peek_grace_source.borrow_mut().take() {
-                src.remove();
+                safe_source_remove(src);
             }
             if let Some(source_id) = ctx_blade_enter.leave_source.borrow_mut().take() {
-                source_id.remove();
+                safe_source_remove(source_id);
             }
         });
 
@@ -667,7 +701,7 @@ fn main() {
         blade_ctrl.connect_leave(move |_| {
             blade_leave_ref.set_hovered(false);
             if let Some(source_id) = ctx_blade_leave.leave_source.borrow_mut().take() {
-                source_id.remove();
+                safe_source_remove(source_id);
             }
             let ctx_timer = ctx_blade_leave.clone();
             let apply_timer_cb = apply_blade_leave.clone();
@@ -675,8 +709,16 @@ fn main() {
                 std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
                 move || {
                     ctx_timer.leave_source.borrow_mut().take();
-                    if ctx_timer.companion_blade.is_hovered() {
-                        return glib::ControlFlow::Continue;
+                    let is_suppressed = {
+                        let sm = ctx_timer.state_machine.lock().unwrap();
+                        ctx_timer.panel_hovered.get()
+                            || ctx_timer.companion_blade.is_hovered()
+                            || ctx_timer.companion_blade.is_open()
+                            || has_visible_popover(&ctx_timer.panel_window)
+                            || sm.active_tab() == "__settings__"
+                    };
+                    if is_suppressed {
+                        return glib::ControlFlow::Break;
                     }
                     let mut sm = ctx_timer.state_machine.lock().unwrap();
                     if sm.state() != SidebarState::Pinned {
@@ -699,7 +741,7 @@ fn main() {
             if keyval == gdk::Key::Escape {
                 ctx_key.companion_blade.close();
                 if let Some(src) = ctx_key.peek_grace_source.borrow_mut().take() {
-                    src.remove();
+                    safe_source_remove(src);
                 }
                 let mut sm = ctx_key.state_machine.lock().unwrap();
                 sm.transition(SidebarEvent::EscapePressed);

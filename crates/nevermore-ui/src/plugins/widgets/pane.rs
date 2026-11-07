@@ -1,9 +1,10 @@
 use crate::icons;
+use crate::safe_source_remove;
 use gtk4::accessible::Property;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, DrawingArea, Label, Orientation, ProgressBar, Scale, Stack};
 use nevermore_core::theme::ThemePalette;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::process::Command;
 use std::rc::Rc;
@@ -198,14 +199,18 @@ impl WidgetsPane {
         });
 
         // Handle audio updates on main GTK loop
+        let is_syncing_vol = Rc::new(Cell::new(false));
         let a_scale = vol_scale.clone();
         let a_mute = btn_mute.clone();
         let palette_for_audio = Rc::new(RefCell::new(theme.clone()));
         let p_audio = palette_for_audio.clone();
+        let sync_vol = is_syncing_vol.clone();
         glib::spawn_future_local(async move {
             while let Ok((vol_opt, mute_opt)) = audio_rx.recv().await {
                 if let Some(v) = vol_opt {
+                    sync_vol.set(true);
                     a_scale.set_value(v * 100.0);
+                    sync_vol.set(false);
                 }
                 if let Some(m) = mute_opt {
                     let pal = p_audio.borrow();
@@ -242,15 +247,23 @@ impl WidgetsPane {
         });
 
         // 50ms debounced volume slider (A3: reaped via .status() in background thread)
+        let sync_vol_for_scale = is_syncing_vol.clone();
         let pane_vol = Rc::downgrade(&pane);
         vol_scale.connect_value_changed(move |scale| {
+            if sync_vol_for_scale.get() {
+                return;
+            }
             let val = scale.value() / 100.0;
             if let Some(p) = pane_vol.upgrade() {
                 if let Some(src) = p.vol_debounce.borrow_mut().take() {
-                    src.remove();
+                    safe_source_remove(src);
                 }
+                let p_timer = Rc::downgrade(&p);
                 let source_id =
                     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                        if let Some(pt) = p_timer.upgrade() {
+                            *pt.vol_debounce.borrow_mut() = None;
+                        }
                         thread::spawn(move || {
                             let _ = Command::new("wpctl")
                                 .arg("set-volume")
@@ -336,7 +349,7 @@ impl WidgetsPane {
     /// Cancels its 2s timer strictly on hide and resets last_cpu so zero CPU is drained while hidden
     pub fn on_hide(&self) {
         if let Some(src) = self.timer_source.borrow_mut().take() {
-            src.remove();
+            safe_source_remove(src);
         }
         *self.last_cpu.borrow_mut() = None;
     }

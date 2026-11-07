@@ -491,7 +491,7 @@ pub fn nm_search_entry(tooltip: &str, on_change_debounced: impl Fn(String) + 'st
     let pending_clone = pending_timeout.clone();
     entry.connect_changed(move |e| {
         if let Some(source) = pending_clone.borrow_mut().take() {
-            source.remove();
+            crate::safe_source_remove(source);
         }
         let text = e.text().to_string();
         let deb_cb = debounced_clone.clone();
