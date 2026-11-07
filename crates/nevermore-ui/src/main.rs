@@ -33,7 +33,7 @@ use std::time::Instant;
 pub const PANEL_WIDTH: i32 = 400;
 pub const NAV_RAIL_WIDTH: i32 = 60;
 pub const CONTENT_WIDTH: i32 = 340;
-pub const HOT_EDGE_WIDTH: i32 = 2;
+pub const HOT_EDGE_WIDTH: i32 = 1;
 pub const AUTO_HIDE_DELAY_MS: u32 = 250;
 pub const PEEK_GRACE_DELAY_MS: u32 = 1500;
 
@@ -60,6 +60,12 @@ fn main() {
         .build();
 
     app.connect_activate(move |app| {
+        // Lock GTK4 Settings to Built-In "Default" Theme on Startup
+        if let Some(settings) = gtk4::Settings::default() {
+            settings.set_gtk_theme_name(Some("Default"));
+            settings.set_gtk_application_prefer_dark_theme(true);
+        }
+
         // Keep the application running resident in the background indefinitely
         std::mem::forget(app.hold());
 
@@ -89,7 +95,7 @@ fn main() {
             gtk4::style_context_add_provider_for_display(
                 &display,
                 &css_provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                gtk4::STYLE_PROVIDER_PRIORITY_USER + 100,
             );
 
             // Optional user override stylesheet at $XDG_CONFIG_HOME/nevermore/custom.css
@@ -100,7 +106,7 @@ fn main() {
                     gtk4::style_context_add_provider_for_display(
                         &display,
                         &user_provider,
-                        gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                        gtk4::STYLE_PROVIDER_PRIORITY_USER + 200,
                     );
                 }
             }
@@ -120,7 +126,7 @@ fn main() {
             .map(|m| m.geometry().height())
             .unwrap_or(1080);
 
-        // 2A. P2-1: Build 2px Hot-Edge Layer-Shell Window with exclusive_zone = -1 and Layer::Overlay
+        // 2A. P2-1: Build 1px Hot-Edge Layer-Shell Window with exclusive_zone = -1 and Layer::Overlay
         let hot_edge_window = ApplicationWindow::builder()
             .application(app)
             .title("Nevermore Hot Edge")
@@ -132,9 +138,12 @@ fn main() {
         hot_edge_window.set_anchor(Edge::Right, true);
         hot_edge_window.set_anchor(Edge::Top, true);
         hot_edge_window.set_anchor(Edge::Bottom, true);
+        hot_edge_window.set_margin(Edge::Right, 0);
         hot_edge_window.set_margin(Edge::Top, 0);
         hot_edge_window.set_margin(Edge::Bottom, 0);
         hot_edge_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+        hot_edge_window.set_decorated(false);
+        hot_edge_window.add_css_class("hot-edge-window");
 
         if let Some(ref mon) = primary_monitor {
             hot_edge_window.set_monitor(Some(mon));
@@ -162,9 +171,11 @@ fn main() {
         panel_window.set_anchor(Edge::Right, true);
         panel_window.set_anchor(Edge::Top, true);
         panel_window.set_anchor(Edge::Bottom, true);
+        panel_window.set_margin(Edge::Right, 0);
         panel_window.set_margin(Edge::Top, 0);
         panel_window.set_margin(Edge::Bottom, 0);
         panel_window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
+        panel_window.set_decorated(false);
 
         if let Some(ref mon) = primary_monitor {
             panel_window.set_monitor(Some(mon));

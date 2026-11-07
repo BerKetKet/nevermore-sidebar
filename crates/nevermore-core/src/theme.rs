@@ -739,6 +739,39 @@ window {{
     font-family: "{ui_font}", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }}
 
+window.hot-edge-window,
+window.hot-edge-window.background,
+window.hot-edge-window.csd,
+window.hot-edge-window.solid-csd,
+window.hot-edge-window > *,
+.hot-edge-strip {{
+    background: transparent;
+    background-color: rgba(0, 0, 0, 0.0);
+    border: none;
+    border-width: 0px;
+    border-radius: 0px;
+    box-shadow: none;
+    outline: none;
+    margin: 0px;
+    padding: 0px;
+    min-width: 1px;
+    min-height: 0px;
+}}
+
+window.sidebar-panel,
+window.sidebar-panel.background,
+window.sidebar-panel.csd,
+window.sidebar-panel.solid-csd {{
+    border-radius: 0px;
+    box-shadow: none;
+    outline: none;
+    margin: 0px;
+    padding: 0px;
+    border-top: none;
+    border-bottom: none;
+    border-right: none;
+}}
+
 .sidebar-panel {{
     background-color: {bg_primary};
     border-left: 1px solid {border_color};
