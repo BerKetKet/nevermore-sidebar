@@ -239,6 +239,7 @@ fn main() {
 
         let btn_pin_theme = btn_pin.clone();
         let btn_close_theme = btn_close.clone();
+        let sm_theme = state_machine.clone();
         let on_theme_updated = {
             let css_provider = css_provider.clone();
             let theme_cell = theme_cell.clone();
@@ -246,6 +247,7 @@ fn main() {
             let registry = registry.clone();
             let btn_pin = btn_pin_theme;
             let btn_close = btn_close_theme;
+            let sm = sm_theme;
             Rc::new(move |new_palette: &ThemePalette| {
                 let (saved_ui_font, saved_mono_font, saved_mono_size) = get_appearance_config();
                 let mut pal = new_palette.clone();
@@ -261,7 +263,13 @@ fn main() {
                 *theme_cell.borrow_mut() = pal.clone();
                 let css = pal.to_gtk_css();
                 css_provider.load_from_string(&css);
-                icons::set_button_icon(&btn_pin, "pin", &pal.text_secondary, 16);
+                let is_pinned = sm.lock().unwrap().state() == SidebarState::Pinned;
+                if is_pinned {
+                    let accent_fg = contrast_text_color_for_hex(&pal.accent_color);
+                    icons::set_button_icon(&btn_pin, "pin-off", accent_fg, 16);
+                } else {
+                    icons::set_button_icon(&btn_pin, "pin", &pal.text_secondary, 16);
+                }
                 icons::set_button_icon(&btn_close, "x", &pal.text_secondary, 16);
                 btn_pin.queue_draw();
                 btn_close.queue_draw();
@@ -274,6 +282,7 @@ fn main() {
 
         let btn_pin_app = btn_pin.clone();
         let btn_close_app = btn_close.clone();
+        let sm_app = state_machine.clone();
         let on_appearance_updated = {
             let css_provider = css_provider.clone();
             let theme_cell = theme_cell.clone();
@@ -281,6 +290,7 @@ fn main() {
             let registry = registry.clone();
             let btn_pin = btn_pin_app;
             let btn_close = btn_close_app;
+            let sm = sm_app;
             Rc::new(move |ui_font: &str, mono_font: &str, mono_font_size: f64| {
                 theme_cell.borrow_mut().ui_font = ui_font.to_string();
                 theme_cell.borrow_mut().mono_font = mono_font.to_string();
@@ -288,7 +298,13 @@ fn main() {
                 let cur = theme_cell.borrow().clone();
                 let css = cur.to_gtk_css();
                 css_provider.load_from_string(&css);
-                icons::set_button_icon(&btn_pin, "pin", &cur.text_secondary, 16);
+                let is_pinned = sm.lock().unwrap().state() == SidebarState::Pinned;
+                if is_pinned {
+                    let accent_fg = contrast_text_color_for_hex(&cur.accent_color);
+                    icons::set_button_icon(&btn_pin, "pin-off", accent_fg, 16);
+                } else {
+                    icons::set_button_icon(&btn_pin, "pin", &cur.text_secondary, 16);
+                }
                 icons::set_button_icon(&btn_close, "x", &cur.text_secondary, 16);
                 btn_pin.queue_draw();
                 btn_close.queue_draw();
