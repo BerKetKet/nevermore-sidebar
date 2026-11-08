@@ -8,7 +8,7 @@ use nevermore_core::theme::{
     load_theme, set_active_theme_name, set_appearance_config, set_plugin_disabled, themes_dir,
     SeedConfig, ThemePalette,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::rc::Rc;
 
@@ -236,7 +236,160 @@ pub fn build_settings_page(s_ctx: Rc<SettingsPageContext>) -> gtk4::ScrolledWind
     page_cards.push(card2.upcast::<gtk4::Widget>());
 
     // ==========================================
-    // CARD 3: NAVIGATION TABS
+    // CARD 3: SYSTEM & GENERAL
+    // ==========================================
+    let card_sys_header = nm_section_header("SYSTEM & GENERAL");
+    let autostart_row = GtkBox::new(Orientation::Horizontal, 8);
+    autostart_row.set_hexpand(true);
+
+    let autostart_label = nm_field_label("Autostart at Login");
+    autostart_row.append(&autostart_label);
+
+    let autostart_spacer = GtkBox::new(Orientation::Horizontal, 0);
+    autostart_spacer.set_hexpand(true);
+    autostart_row.append(&autostart_spacer);
+
+    let sw_autostart = Switch::new();
+    let is_syncing_autostart = Rc::new(Cell::new(false));
+    sw_autostart.set_sensitive(false);
+    autostart_row.append(&sw_autostart);
+
+    // Async State Query on Startup
+    let is_syncing_init = is_syncing_autostart.clone();
+    let sw_init_weak = sw_autostart.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let is_enabled = gio::spawn_blocking(|| {
+            let output = std::process::Command::new("systemctl")
+                .args(["--user", "is-enabled", "nevermore.service"])
+                .output();
+            match output {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    let trimmed = text.trim();
+                    trimmed == "enabled" || trimmed == "enabled-runtime"
+                }
+                Err(_) => false,
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        if let Some(sw) = sw_init_weak.upgrade() {
+            is_syncing_init.set(true);
+            sw.set_active(is_enabled);
+            sw.set_state(is_enabled);
+            is_syncing_init.set(false);
+            sw.set_sensitive(true);
+        }
+    });
+
+    // Async State-Set Handler
+    let is_syncing_handler = is_syncing_autostart.clone();
+    sw_autostart.connect_state_set(move |sw, desired_state| {
+        if is_syncing_handler.get() {
+            return glib::Propagation::Proceed;
+        }
+
+        sw.set_sensitive(false);
+        let sw_weak = sw.downgrade();
+        let is_syncing = is_syncing_handler.clone();
+
+        glib::MainContext::default().spawn_local(async move {
+            let res = gio::spawn_blocking(move || -> Result<(), String> {
+                if desired_state {
+                    let user_service_dir = if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+                        std::path::PathBuf::from(xdg).join("systemd/user")
+                    } else if let Some(home) = std::env::var_os("HOME") {
+                        std::path::PathBuf::from(home).join(".config/systemd/user")
+                    } else {
+                        std::path::PathBuf::from("/home/bgg/.config/systemd/user")
+                    };
+                    let user_service_file = user_service_dir.join("nevermore.service");
+
+                    if !user_service_file.exists() {
+                        let _ = fs::create_dir_all(&user_service_dir);
+                        let source_path = std::path::Path::new(
+                            "/home/bgg/projects/nevermore-sidebar/resources/systemd/nevermore.service",
+                        );
+                        let content = if source_path.exists() {
+                            fs::read_to_string(source_path).unwrap_or_else(|_| {
+                                include_str!("../../../resources/systemd/nevermore.service")
+                                    .to_string()
+                            })
+                        } else {
+                            include_str!("../../../resources/systemd/nevermore.service").to_string()
+                        };
+                        if let Err(e) = fs::write(&user_service_file, content) {
+                            return Err(format!("Failed to write service file: {}", e));
+                        }
+                    }
+
+                    let reload_status = std::process::Command::new("systemctl")
+                        .args(["--user", "daemon-reload"])
+                        .status();
+                    if let Err(e) = reload_status {
+                        return Err(format!("Failed to execute daemon-reload: {}", e));
+                    }
+
+                    let enable_status = std::process::Command::new("systemctl")
+                        .args(["--user", "enable", "nevermore.service"])
+                        .status();
+                    match enable_status {
+                        Ok(status) if status.success() => Ok(()),
+                        Ok(status) => Err(format!("systemctl enable exited with {}", status)),
+                        Err(e) => Err(format!("Failed to execute systemctl enable: {}", e)),
+                    }
+                } else {
+                    let disable_status = std::process::Command::new("systemctl")
+                        .args(["--user", "disable", "nevermore.service"])
+                        .status();
+                    match disable_status {
+                        Ok(status) if status.success() => Ok(()),
+                        Ok(status) => Err(format!("systemctl disable exited with {}", status)),
+                        Err(e) => Err(format!("Failed to execute systemctl disable: {}", e)),
+                    }
+                }
+            })
+            .await;
+
+            let succeeded = match res {
+                Ok(Ok(())) => true,
+                Ok(Err(err)) => {
+                    eprintln!("[SETTINGS] Autostart operation failed: {}", err);
+                    false
+                }
+                Err(_) => {
+                    eprintln!("[SETTINGS] Autostart worker thread panicked");
+                    false
+                }
+            };
+
+            if let Some(sw) = sw_weak.upgrade() {
+                if succeeded {
+                    is_syncing.set(true);
+                    sw.set_state(desired_state);
+                    is_syncing.set(false);
+                } else {
+                    is_syncing.set(true);
+                    sw.set_active(!desired_state);
+                    sw.set_state(!desired_state);
+                    is_syncing.set(false);
+                }
+                sw.set_sensitive(true);
+            }
+        });
+
+        glib::Propagation::Stop
+    });
+
+    let card_sys = nm_card(vec![
+        card_sys_header.upcast::<gtk4::Widget>(),
+        autostart_row.upcast::<gtk4::Widget>(),
+    ]);
+    page_cards.push(card_sys.upcast::<gtk4::Widget>());
+
+    // ==========================================
+    // CARD 4: NAVIGATION TABS
     // ==========================================
     let card3_header = nm_section_header("NAVIGATION TABS");
     let card3_desc = nm_field_label("Toggle discovered sidebar tabs");
