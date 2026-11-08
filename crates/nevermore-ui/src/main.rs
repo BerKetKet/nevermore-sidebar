@@ -689,19 +689,19 @@ fn main() {
                 std::time::Duration::from_millis(AUTO_HIDE_DELAY_MS as u64),
                 move || {
                     if ctx_timer.panel_hovered.get() {
-                        ctx_timer.leave_source.borrow_mut().take();
+                        *ctx_timer.leave_source.borrow_mut() = None;
                         return glib::ControlFlow::Break;
                     }
                     if has_visible_popover(&ctx_timer.panel_window) {
                         return glib::ControlFlow::Continue;
                     }
-                    ctx_timer.leave_source.borrow_mut().take();
                     let mut sm = ctx_timer.state_machine.lock().unwrap();
                     if sm.state() != SidebarState::Pinned {
                         sm.transition(SidebarEvent::PointerLeavePanel);
                         drop(sm);
                         apply_timer_cb();
                     }
+                    *ctx_timer.leave_source.borrow_mut() = None;
                     glib::ControlFlow::Break
                 },
             );
