@@ -32,7 +32,7 @@ use std::time::Instant;
 pub const PANEL_WIDTH: i32 = 400;
 pub const NAV_RAIL_WIDTH: i32 = 60;
 pub const CONTENT_WIDTH: i32 = 340;
-pub const HOT_EDGE_WIDTH: i32 = 1;
+pub const HOT_EDGE_WIDTH: i32 = 3;
 pub const AUTO_HIDE_DELAY_MS: u32 = 250;
 pub const PEEK_GRACE_DELAY_MS: u32 = 1500;
 
@@ -59,9 +59,9 @@ fn main() {
         .build();
 
     app.connect_activate(move |app| {
-        // Lock GTK4 Settings to Built-In "Default" Theme on Startup
+        // Lock GTK4 Settings to Built-In "Adwaita" Theme and prefer dark on Startup
         if let Some(settings) = gtk4::Settings::default() {
-            settings.set_gtk_theme_name(Some("Default"));
+            settings.set_gtk_theme_name(Some("Adwaita"));
             settings.set_gtk_application_prefer_dark_theme(true);
         }
 
@@ -207,12 +207,14 @@ fn main() {
 
         // 5. Construct Layout locked to 400px (60px rail + 340px content), full monitor height
         let main_box = GtkBox::new(Orientation::Horizontal, 0);
+        main_box.add_css_class("sidebar-panel");
         main_box.set_size_request(PANEL_WIDTH, monitor_height);
         main_box.set_hexpand(false);
         main_box.set_vexpand(true);
 
         // Content Area with Header
         let content_stack = Stack::new();
+        content_stack.add_css_class("sidebar-content");
         content_stack.set_hexpand(true);
         content_stack.set_vexpand(true);
 
@@ -341,6 +343,7 @@ fn main() {
         content_stack.add_named(&settings_page_widget, Some("__settings__"));
 
         let content_area = GtkBox::new(Orientation::Vertical, 0);
+        content_area.add_css_class("sidebar-content");
         content_area.set_size_request(CONTENT_WIDTH, monitor_height);
         content_area.set_hexpand(false);
         content_area.set_vexpand(true);
@@ -562,9 +565,11 @@ fn main() {
 
         // Pointer Enter on Hot Edge Window (Hidden -> Peek + 1500ms Grace Timer)
         let edge_motion = EventControllerMotion::new();
+        edge_motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let apply_edge = apply_state.clone();
         let ctx_edge = ctx.clone();
-        edge_motion.connect_enter(move |_, _, _| {
+        edge_motion.connect_enter(move |_, x, y| {
+            println!("[HOT_EDGE] Pointer enter on window at ({:.1}, {:.1})", x, y);
             if let Some(src) = ctx_edge.peek_grace_source.borrow_mut().take() {
                 safe_source_remove(src);
             }
@@ -596,9 +601,11 @@ fn main() {
         hot_edge_window.add_controller(edge_motion);
 
         let edge_box_motion = EventControllerMotion::new();
+        edge_box_motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let apply_edge_box = apply_state.clone();
         let ctx_edge_box = ctx.clone();
-        edge_box_motion.connect_enter(move |_, _, _| {
+        edge_box_motion.connect_enter(move |_, x, y| {
+            println!("[HOT_EDGE] Pointer enter on box at ({:.1}, {:.1})", x, y);
             if let Some(src) = ctx_edge_box.peek_grace_source.borrow_mut().take() {
                 safe_source_remove(src);
             }
@@ -631,6 +638,7 @@ fn main() {
 
         // Click inside Panel Window (Peek -> Engaged)
         let click_inside = GestureClick::new();
+        click_inside.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let apply_click = apply_state.clone();
         let ctx_click = ctx.clone();
         click_inside.connect_pressed(move |_, _, _, _| {
@@ -651,9 +659,11 @@ fn main() {
 
         // Motion Controller on Panel Window (Cancel debounce on enter, auto-hide on leave)
         let panel_motion = EventControllerMotion::new();
+        panel_motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let ctx_leave = ctx.clone();
 
-        panel_motion.connect_enter(move |_, _, _| {
+        panel_motion.connect_enter(move |_, x, y| {
+            println!("[PANEL] Pointer enter at ({:.1}, {:.1})", x, y);
             ctx_leave.panel_hovered.set(true);
             if let Some(src) = ctx_leave.peek_grace_source.borrow_mut().take() {
                 safe_source_remove(src);
@@ -666,6 +676,7 @@ fn main() {
         let ctx_timer_leave = ctx.clone();
         let apply_timer = apply_state.clone();
         panel_motion.connect_leave(move |_| {
+            println!("[PANEL] Pointer leave");
             ctx_timer_leave.panel_hovered.set(false);
             if let Some(source_id) = ctx_timer_leave.leave_source.borrow_mut().take() {
                 safe_source_remove(source_id);

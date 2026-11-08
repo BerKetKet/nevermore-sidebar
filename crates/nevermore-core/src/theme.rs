@@ -754,14 +754,21 @@ window.hot-edge-window > *,
     outline: none;
     margin: 0px;
     padding: 0px;
-    min-width: 1px;
+    min-width: 3px;
     min-height: 0px;
 }}
 
 window.sidebar-panel,
 window.sidebar-panel.background,
 window.sidebar-panel.csd,
-window.sidebar-panel.solid-csd {{
+window.sidebar-panel.solid-csd,
+box.sidebar-panel,
+.sidebar-panel,
+.sidebar-content,
+.content-area {{
+    background: {bg_primary};
+    background-color: {bg_primary};
+    color: {text_primary};
     border-radius: 0px;
     box-shadow: none;
     outline: none;
@@ -773,14 +780,7 @@ window.sidebar-panel.solid-csd {{
 }}
 
 .sidebar-panel {{
-    background-color: {bg_primary};
     border-left: 1px solid {border_color};
-}}
-
-.companion-blade {{
-    background-color: {bg_primary};
-    border-left: 1px solid {border_color};
-    border-right: 1px solid {border_color};
 }}
 
 .sidebar-panel.state-engaged {{
@@ -789,12 +789,6 @@ window.sidebar-panel.solid-csd {{
 
 .sidebar-panel.state-pinned {{
     border-left: 2px solid {accent_color};
-}}
-
-/* 2px Hot-Edge Strip when Hidden */
-.hot-edge-strip {{
-    background-color: rgba(24, 24, 27, 0.01);
-    min-width: 2px;
 }}
 
 /* Nav Rail (60px) */
