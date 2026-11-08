@@ -1,3 +1,4 @@
+use nevermore_ui::has_visible_popover;
 use nevermore_ui::safe_source_remove;
 use nevermore_ui::{icons, ipc_server, nav_rail, plugins};
 
@@ -350,24 +351,6 @@ fn main() {
 
         content_area.append(&header);
         content_area.append(&content_stack);
-
-        // Helper to detect open popovers / dropdown menus
-        fn has_visible_popover(root: &impl IsA<gtk4::Widget>) -> bool {
-            fn check_widget(w: &gtk4::Widget) -> bool {
-                if w.is_visible() && (w.is::<gtk4::Popover>() || w.is::<gtk4::PopoverMenu>()) {
-                    return true;
-                }
-                let mut child = w.first_child();
-                while let Some(c) = child {
-                    if check_widget(&c) {
-                        return true;
-                    }
-                    child = c.next_sibling();
-                }
-                false
-            }
-            check_widget(root.as_ref())
-        }
 
         // Shared Context for Visual Updates
         struct UiContext {
