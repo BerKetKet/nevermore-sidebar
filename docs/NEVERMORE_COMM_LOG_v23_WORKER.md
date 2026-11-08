@@ -156,3 +156,31 @@ Full workspace checks passed with zero errors:
   [HOT_EDGE] Allocated geometry: window width=3, window height=1080, box height=1080
   ```
 - Service state: `active (running)`.
+
+---
+
+## 6. Wayland Buffer Attachment & Meta+N Global Shortcut Resolution (Follow-up Hotfix)
+
+### A. Root Cause: Unmapped Wayland Surface from Zero-Alpha CSS
+- **Observation:** `nevermore-ui` logged `[HOT_EDGE] Allocated geometry: window width=3`, but moving the pointer to `x=1919` never triggered `[HOT_EDGE] Pointer enter`.
+- **Diagnostic:** Tracing via `WAYLAND_DEBUG=1` revealed that GTK4's GSK renderer omits drawing commands entirely for surfaces where all CSS backgrounds are `rgba(0, 0, 0, 0.0)` with no borders or shadows. Consequently, `wl_surface.attach` was never invoked on the hot-edge surface. Under Wayland protocol semantics, a surface with no attached buffer is unmapped by KWin, rendering it incapable of receiving pointer enter/motion events.
+- **Fix:** In `crates/nevermore-core/src/theme.rs`, set `background-color: rgba(24, 24, 27, 0.01)` on `window.hot-edge-window` and `.hot-edge-strip`. The 0.01 alpha forces GSK to allocate and attach the buffer (`wl_surface#50.attach(wl_buffer#87, 0, 0)`) without creating visible artifacts on the desktop framebuffer.
+- **Empirical Verification:**
+  - `ydotool mousemove -- -1000 0 && sleep 0.2 && ydotool mousemove -- 2000 0`
+  - Output logged:
+    ```
+    [HOT_EDGE] Pointer enter on window at (2.0, 444.5)
+    [HOT_EDGE] Pointer enter on box at (2.0, 444.5)
+    [PANEL] Pointer enter at (198.0, 444.5)
+    ```
+  - State verified: `Sidebar State: Peek`, `Visible: true`. Moving mouse away transitions back to `Sidebar State: Hidden`, `Visible: false`.
+
+### B. Root Cause: Missing KDE Plasma 6 Shortcut Desktop Entry
+- **Observation:** Pressing `Meta + N` did not invoke `nevermore toggle`.
+- **Diagnostic:** `~/.config/kglobalshortcutsrc` had entries pointing to dead plasmoids (`activate widget 432=Meta+N`, `toggle-raven.desktop`), while `~/.local/share/applications/toggle-nevermore.desktop` was missing from disk. Plasma 6 requires physical `.desktop` files in `~/.local/share/applications/` and `~/.local/share/kglobalaccel/` to wire global shortcuts to executables.
+- **Fix:**
+  1. Created `/home/bgg/.local/share/applications/toggle-nevermore.desktop` with `Exec=/home/bgg/.local/bin/nevermore toggle` and `X-KDE-Shortcuts=Meta+N`.
+  2. Symlinked to `/home/bgg/.local/share/kglobalaccel/toggle-nevermore.desktop`.
+  3. Cleaned dead shortcut entries in `~/.config/kglobalshortcutsrc`.
+  4. Verified registration via DBus: `/component/toggle_nevermore_desktop` registers shortcut `268435534` (`Meta+N`).
+  5. Invoking `qdbus org.kde.kglobalaccel /component/toggle_nevermore_desktop org.kde.kglobalaccel.Component.invokeShortcut "_launch"` cleanly toggles Nevermore between `Hidden` (`Visible: false`) and `Engaged` (`Visible: true`).

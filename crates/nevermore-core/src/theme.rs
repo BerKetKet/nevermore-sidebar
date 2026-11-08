@@ -743,10 +743,8 @@ window.hot-edge-window,
 window.hot-edge-window.background,
 window.hot-edge-window.csd,
 window.hot-edge-window.solid-csd,
-window.hot-edge-window > *,
 .hot-edge-strip {{
-    background: transparent;
-    background-color: rgba(0, 0, 0, 0.0);
+    background-color: rgba(24, 24, 27, 0.01);
     border: none;
     border-width: 0px;
     border-radius: 0px;
