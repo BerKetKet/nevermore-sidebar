@@ -42,7 +42,7 @@
 ### Prerequisites
 - Linux with Wayland compositor (KDE Plasma 6 / KWin recommended)
 - Rust toolchain (1.80+)
-- System libraries: `gtk4`, `gtk4-layer-shell`, `vte4`, `tmux`, `mpv`, `yt-dlp`, `secret-tool`
+- System libraries: `gtk4`, `gtk4-layer-shell`, `vte4`, `tmux`, `mpd`, `mpc`
 
 ### Build
 ```bash
@@ -60,8 +60,8 @@ systemctl --user enable --now nevermore.service
 ```bash
 # Show specific tab
 nevermore show terminal
-nevermore show media
-nevermore show vpn
+nevermore show music
+nevermore show notepad
 
 # Toggle visibility
 nevermore toggle
@@ -83,7 +83,7 @@ Nevermore maintains strict automated verification gates:
 
 ```bash
 # 1. Plugin SDK Contract Verification (Manifests, Icons, Linter, Widget Tree, Timers)
-DISPLAY="" WAYLAND_DISPLAY="" cargo test -p nevermore-ui --test plugin_contract
+WAYLAND_DISPLAY=wayland-1 cargo test -p nevermore-ui --test plugin_contract
 
 # 2. Workspace Integration & Unit Tests (54/54 passing)
 cargo test --workspace --locked
